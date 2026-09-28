@@ -1,6 +1,6 @@
 # Parameter catalog
 
-This note answers [#3](https://github.com/ozanozbeker/oxy/issues/3) for [#12](https://github.com/ozanozbeker/oxy/issues/12).
+This note answers [#3](https://github.com/ozanozbeker/oxyscraper/issues/3) for [#12](https://github.com/ozanozbeker/oxyscraper/issues/12).
 The docs were read on 2026-09-24 through their `.md` pages, and the SDK was read at tag `3.0.0` (commit `0a98cff`).
 
 ## Answer

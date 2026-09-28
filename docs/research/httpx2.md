@@ -1,7 +1,7 @@
 # What httpx2 provides for oxy's transport
 
 This note records what httpx2 2.13.1 provides for oxy's transport, and how it differs from httpx 0.28.1.
-It answers [#4](https://github.com/ozanozbeker/oxy/issues/4) for [#11](https://github.com/ozanozbeker/oxy/issues/11) and [#23](https://github.com/ozanozbeker/oxy/issues/23).
+It answers [#4](https://github.com/ozanozbeker/oxyscraper/issues/4) for [#11](https://github.com/ozanozbeker/oxyscraper/issues/11) and [#23](https://github.com/ozanozbeker/oxyscraper/issues/23).
 It covers httpx2 at tag `v2.13.1` (commit `d91c9f4`) and httpx at tag `0.28.1` (commit `26d48e0`), as published on 2026-09-24.
 The measurements ran that day on Python 3.11.15 and macOS, in throwaway environments outside the repo.
 The two requests to Oxylabs sent no credentials, so they spent no credits.
@@ -337,11 +337,11 @@ A side-by-side import of both packages compared `__all__`, then the parameter na
 
 - **HTTP/2 against Oxylabs is unmeasured under load.**
   Both hosts support it with 100 streams, but nothing here shows whether it is faster or more reliable than HTTP/1.1 for oxy's status checks.
-  A live test in [#9](https://github.com/ozanozbeker/oxy/issues/9) can measure it.
+  A live test in [#9](https://github.com/ozanozbeker/oxyscraper/issues/9) can measure it.
 - **No httpx2 document states a stability policy.**
   Two things are unconfirmed: whether the 2.x line keeps the 0.28 API, and whether `<3` is a safe upper bound for oxy.
-  Either [#21](https://github.com/ozanozbeker/oxy/issues/21) or a question to upstream can settle it.
-- **Where retry and pacing code runs is a design choice for [#11](https://github.com/ozanozbeker/oxy/issues/11), [#13](https://github.com/ozanozbeker/oxy/issues/13) and [#14](https://github.com/ozanozbeker/oxy/issues/14).**
+  Either [#21](https://github.com/ozanozbeker/oxyscraper/issues/21) or a question to upstream can settle it.
+- **Where retry and pacing code runs is a design choice for [#11](https://github.com/ozanozbeker/oxyscraper/issues/11), [#13](https://github.com/ozanozbeker/oxyscraper/issues/13) and [#14](https://github.com/ozanozbeker/oxyscraper/issues/14).**
   A transport wrapper needs a sync and an async class.
   A layer above the client can share one sans-IO core between both clients.
   `MockTransport` tests either.

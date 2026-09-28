@@ -1,7 +1,7 @@
 # What the docs state about the job lifecycle
 
 This note records what the Oxylabs docs state about a job, from submission to result, for Realtime and Push-Pull.
-It answers [#2](https://github.com/ozanozbeker/oxy/issues/2), and [#9](https://github.com/ozanozbeker/oxy/issues/9) tests its open questions against the live API.
+It answers [#2](https://github.com/ozanozbeker/oxyscraper/issues/2), and [#9](https://github.com/ozanozbeker/oxyscraper/issues/9) tests its open questions against the live API.
 It covers the docs as published on 2026-09-24.
 
 ## Answer
@@ -568,7 +568,7 @@ Managing aggregators uses its own endpoints, as the Scheduler does.
 
 ## Open questions
 
-[#9](https://github.com/ozanozbeker/oxy/issues/9) tests these against the live API.
+[#9](https://github.com/ozanozbeker/oxyscraper/issues/9) tests these against the live API.
 Each question names the smallest test that settles it.
 The docs already show the batch response shape, but #9 still needs a live sample as a fixture.
 

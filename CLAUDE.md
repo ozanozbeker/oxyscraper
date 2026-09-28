@@ -4,7 +4,7 @@
 
 ### Issue tracker
 
-Issues are GitHub issues on `ozanozbeker/oxy`, managed with the `gh` CLI.
+Issues are GitHub issues on `ozanozbeker/oxyscraper`, managed with the `gh` CLI.
 See `docs/agents/issue-tracker.md`.
 
 ### Triage labels

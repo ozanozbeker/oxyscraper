@@ -1,6 +1,6 @@
-# oxy
+# oxyscraper
 
-oxy is a Python library and CLI for the Oxylabs Web Scraper API.
+oxyscraper is a Python library and CLI for the Oxylabs Web Scraper API.
 The glossary uses Oxylabs' own terms in the meanings Oxylabs gives them.
 
 ## Language

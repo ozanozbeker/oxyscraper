@@ -1,6 +1,6 @@
 # Issue tracker: GitHub
 
-Issues and specs (PRDs) for this repo are GitHub issues on `ozanozbeker/oxy`. Use the `gh` CLI for every operation. Inside the clone, `gh` reads the repo from the git remote.
+Issues and specs (PRDs) for this repo are GitHub issues on `ozanozbeker/oxyscraper`. Use the `gh` CLI for every operation. Inside the clone, `gh` reads the repo from the git remote.
 
 ## Conventions
 

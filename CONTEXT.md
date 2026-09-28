@@ -32,7 +32,8 @@ _Avoid_: mode, API type
 Each value becomes its own job.
 _Avoid_: bulk request
 
-**Result**: What a job produces, returned by Realtime or fetched from the Push-Pull results endpoint.
+**Result**: What a job produces for one page, returned by Realtime or fetched from the Push-Pull results endpoint.
+Oxylabs bills per result, and only when the website returned 2xx or 4xx.
 _Avoid_: response, output
 
 **Output type**: The format of a result: `raw`, `parsed`, `png`, `markdown` or `xhr`.

@@ -1,5 +1,5 @@
 [project]
-name = "oxy"
+name = "oxyscraper"
 version = "0.1.0"
 description = "Utilities for working with Oxylabs' Web Scraper API."
 readme = "README.md"

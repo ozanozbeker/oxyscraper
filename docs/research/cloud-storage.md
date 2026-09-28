@@ -1,12 +1,12 @@
 # What a live test shows about Cloud Storage
 
 This note records what a small billed run against the live Oxylabs API showed about Cloud Storage.
-It answers [Does Cloud Storage work on the batch endpoint?](https://github.com/ozanozbeker/oxy/issues/10).
+It answers [Does Cloud Storage work on the batch endpoint?](https://github.com/ozanozbeker/oxyscraper/issues/10).
 Its questions are the Cloud Storage questions in [What the docs state about the job lifecycle](job-lifecycle.md#cloud-storage).
 The run took place on 2026-09-25 from 14:26 to 14:36 UTC, on an account with the Starter plan.
 It spent 9 results, 2 of them rendered.
 
-Every job uploaded to the private GCS bucket from [Provision a test bucket Oxylabs can write to](https://github.com/ozanozbeker/oxy/issues/7).
+Every job uploaded to the private GCS bucket from [Provision a test bucket Oxylabs can write to](https://github.com/ozanozbeker/oxyscraper/issues/7).
 Oxylabs' service account holds only `storage.objects.create` on it.
 The billed jobs used `universal` on Oxylabs' practice site, `https://sandbox.oxylabs.io/products`, and `amazon_search`.
 Free jobs, called fault jobs below, used unregistered `.com` names, as [Fault jobs](live-api.md#fault-jobs) describes.

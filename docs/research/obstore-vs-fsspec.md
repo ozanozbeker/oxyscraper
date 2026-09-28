@@ -1,7 +1,7 @@
 # How obstore and fsspec compare for oxy's cloud writer
 
 This note compares obstore and fsspec as the library behind oxy's cloud writer, for S3, GCS and Azure.
-It answers [#5](https://github.com/ozanozbeker/oxy/issues/5), and [#16](https://github.com/ozanozbeker/oxy/issues/16) makes the decision.
+It answers [#5](https://github.com/ozanozbeker/oxyscraper/issues/5), and [#16](https://github.com/ozanozbeker/oxyscraper/issues/16) makes the decision.
 It reads obstore 0.11.1, fsspec 2026.9.0, s3fs 2026.9.0, gcsfs 2026.8.1, adlfs 2026.8.0 and Polars 1.44.2, as published on 2026-09-24.
 The measurements ran that day on Python 3.11.15 and macOS 26.6 (arm64), in throwaway uv environments outside the repo.
 
@@ -392,13 +392,13 @@ For fsspec:
 - **Which event loops does oxy's async API support?**
   The httpx2 2.13.1 package declares AnyIO, asyncio and Trio support ([PyPI][pypi-httpx2]).
   Neither obstore's nor fsspec's async API runs under trio, so a trio caller would need the sync API in a worker thread.
-  No ticket settles the event loops yet, and [#11](https://github.com/ozanozbeker/oxy/issues/11) covers sync and async only.
+  No ticket settles the event loops yet, and [#11](https://github.com/ozanozbeker/oxyscraper/issues/11) covers sync and async only.
 - **How fast is each library at thousands of small PUTs?**
   The obstore README's figure of 9 times fsspec's throughput comes from a benchmark of concurrent small GETs ([README][obs-readme]).
-  Neither project publishes a PUT benchmark, and measuring one needs a real bucket, such as the one [#7](https://github.com/ozanozbeker/oxy/issues/7) provisions.
+  Neither project publishes a PUT benchmark, and measuring one needs a real bucket, such as the one [#7](https://github.com/ozanozbeker/oxyscraper/issues/7) provisions.
 - **How does the writer treat a retried `create`?**
   With job-ID keys, a retry after a lost success response gets `412`, and obstore raises `AlreadyExistsError` for it.
-  Ticket [#16](https://github.com/ozanozbeker/oxy/issues/16) chooses between `overwrite` and `create`, and `create` also needs a rule for that error.
+  Ticket [#16](https://github.com/ozanozbeker/oxyscraper/issues/16) chooses between `overwrite` and `create`, and `create` also needs a rule for that error.
 - **Is Windows ARM64 in scope?**
   No obstore wheel exists for it.
 

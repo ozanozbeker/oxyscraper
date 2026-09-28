@@ -1,7 +1,7 @@
 # What a live test shows about the job lifecycle
 
 This note records what a small billed run against the live Oxylabs API showed about the job lifecycle.
-It answers [What does a live test show about the job lifecycle?](https://github.com/ozanozbeker/oxy/issues/9).
+It answers [What does a live test show about the job lifecycle?](https://github.com/ozanozbeker/oxyscraper/issues/9).
 Its questions are the open questions in [What the docs state about the job lifecycle](job-lifecycle.md).
 The run took place on 2026-09-24, on an account with the Starter plan.
 Its jobs ran from 20:02 to 21:01 UTC, and its reads of Usage Statistics went on to 21:31 UTC.

@@ -21,16 +21,13 @@ See `docs/agents/domain.md`.
 
 When the live API contradicts the Oxylabs docs, or does something they leave out, add an entry to `ERRATA.md`.
 
-## Git
+## Contributing
 
-Every change reaches `main` through a pull request, the maintainer's included.
-CI then runs before the change lands.
-A direct push has no pull request, so release-please cannot correct its changelog entry with `BEGIN_COMMIT_OVERRIDE`.
+@CONTRIBUTING.md
 
-When told to commit, commit on a new branch, never on `main`.
-Push the branch and open a pull request with `gh pr create`.
-Then `gh pr merge --auto --squash` merges it once the required checks pass.
-The squash commit takes the pull request's title, and release-please reads that commit, so the title follows Conventional Commits.
+The line above imports `CONTRIBUTING.md` into every session, because it holds the workflow that every change follows.
+When told to commit, follow its pull request flow, and never commit on `main`.
+Never merge a release pull request or approve a deployment unless told to.
 
 ## Writing
 

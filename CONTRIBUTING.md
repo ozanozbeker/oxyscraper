@@ -21,13 +21,21 @@ Every change reaches `main` through a pull request, the maintainer's included.
 CI then runs before the change lands.
 
 ```sh
+git switch main && git pull
 git switch -c <branch>
 git commit
+git push
 gh pr create --fill
 gh pr merge --auto --squash
 ```
 
-GitHub merges the pull request once the required checks pass.
+- `git commit` runs the `pre-commit` and `commit-msg` hooks.
+  A hook that fixes a file stops the commit, so run `git add -A` and commit again.
+- `gh pr create --fill` copies the message of a single commit into the pull request.
+  With several commits, pass `--title` yourself.
+- `gh pr merge --auto --squash` merges the pull request once the required checks pass.
+  `gh pr checks --watch` shows them.
+
 Pull requests merge by squash only, and the squash commit takes the pull request's title and description.
 Since release-please reads that commit:
 
@@ -36,6 +44,21 @@ Since release-please reads that commit:
 - A breaking change ends the description with a one-line `BREAKING CHANGE:` footer that links to its section of the upgrade page.
 - To correct a merged entry, edit the merged pull request's description.
   Put the corrected message between `BEGIN_COMMIT_OVERRIDE` and `END_COMMIT_OVERRIDE`, and release-please uses it on its next run.
+
+## Pull requests from bots
+
+- Dependabot opens `chore: bump the uv group` and `ci: bump the actions group` on Mondays.
+- `prek-update.yml` opens `chore: update prek hooks` on the first of each month.
+- release-please opens `chore(main): release X.Y.Z`, and it updates that pull request after each merge that users would see.
+
+Their types start no release, so merge the first two with `gh pr merge <number> --auto --squash` once they pass.
+The release pull request waits until you want to release.
+
+## What the rulesets block
+
+- The `main` ruleset blocks every push to `main`, and a merge before `all-green` and `title` pass.
+  The admin can still merge a failing pull request with **Merge without waiting for requirements to be met**, so keep that for emergencies.
+- The `version tags` ruleset lets only the App and the admin create, update or delete a `v*` tag.
 
 ## Versions
 
@@ -94,11 +117,24 @@ oxyscraper supports every CPython that has not reached its end of life.
 
 1. release-please keeps a release pull request open with the next version, `CHANGELOG.md` and `uv.lock`.
 2. Merging it makes the App create the tag and the GitHub release.
-3. `release.yml` builds the distributions and waits for approval in the `pypi` environment.
-   It then uploads them to PyPI with attestations.
+3. `release.yml` builds the distributions, and its `pypi` job waits for approval.
+   On the run's page, click **Review deployments**, tick `pypi`, then click **Approve and deploy**.
+   The job then uploads the distributions to PyPI with attestations.
 4. `docs.yml` deploys the site.
 
 A release published by hand starts the same two workflows, which makes it the recovery path.
+
+## When something fails
+
+- **A CI job fails.**
+  `gh pr checks` names the job, and `gh run view <run-id> --log-failed` prints its log.
+  Push a fix to the same branch, and auto-merge stays on.
+- **The title check fails.**
+  Fix the title with `gh pr edit --title`, and the check runs again.
+- **A changelog entry is wrong after the merge.**
+  Use `BEGIN_COMMIT_OVERRIDE`, as [Pull requests](#pull-requests) describes.
+- **`release.yml` or `docs.yml` fails after the tag exists.**
+  `gh run rerun <run-id> --failed` runs the failed jobs again.
 
 ## Traps
 

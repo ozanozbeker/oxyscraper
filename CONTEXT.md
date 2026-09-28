@@ -11,6 +11,10 @@ The glossary uses Oxylabs' own terms in the meanings Oxylabs gives them.
 Each job has an ID and a status.
 _Avoid_: task, request, scrape
 
+**Faulted**: The status of a job that Oxylabs could not complete, even after retrying it.
+A faulted job bills nothing.
+_Avoid_: failed, errored
+
 **Source**: The value of the `source` parameter, which names the scraper that runs a job, such as `amazon_product` or `universal`.
 _Avoid_: scraper, endpoint
 
@@ -56,3 +60,10 @@ _Avoid_: client, connection
 
 **Run**: The jobs that one `execute` or `stream` call submits, which oxy returns as each job finishes.
 _Avoid_: result, which is one page of one job
+
+**Rejection**: An error that the API returns for a payload instead of a job, so nothing bills.
+_Avoid_: failed job, invalid job
+
+**Checkpoint**: The jobs that the API accepted for a run that has not finished, each with the payload it came from, kept at a location the caller names.
+A rerun with the same checkpoint fetches those jobs instead of submitting their payloads again.
+_Avoid_: record, job record, journal, manifest

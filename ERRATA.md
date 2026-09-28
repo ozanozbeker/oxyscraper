@@ -2,7 +2,7 @@
 
 This file lists errors and gaps in the Oxylabs docs that live tests found, to report upstream.
 GitBook exports the docs to `oxylabs/gitbook-public-english`, which is private, so the docs have no public issue tracker.
-Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the parameter entries, and links the test behind it.
+Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the parameter and retention entries, and links the test behind it.
 
 ## Statements the API contradicts
 
@@ -19,6 +19,13 @@ Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the p
   Only the undocumented `x-oxylabs-job-status` header tells these apart from a pending job.
 - **Evidence:** [A faulted job](docs/research/live-api.md#a-faulted-job) and [The content endpoint](docs/research/live-api.md#the-content-endpoint).
 
+### Response Codes: expired results return 204, not 404
+
+- **Docs:** [Response Codes][response-codes] gives 404 for a job ID that "does not exist or is no longer available."
+- **API:** 78 to 97 hours after the jobs finished, the results and content endpoints returned 204 for them, with `x-oxylabs-job-status: done`, or `faulted` for a faulted job.
+  Jobs 4 hours old returned 200 from the results endpoint, and a made-up job ID returned 404.
+- **Evidence:** [Retention](docs/research/live-api.md#retention).
+
 ### Response Codes: a 401 for an unknown username has no message
 
 - **Docs:** [Response Codes][response-codes] lists three 401 messages: `Authorization header not provided`, `Invalid authorization header` and `Client not found`.
@@ -32,6 +39,12 @@ Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the p
 - **API:** the submission returned 202, and 613 appeared later as the `status_code` of the faulted job's results entry.
   [Response Codes][response-codes] describes them correctly, as a job that Oxylabs failed.
 - **Evidence:** [A faulted job](docs/research/live-api.md#a-faulted-job).
+
+### Help center: the API keeps a job for longer than 48 hours
+
+- **Docs:** the [job ID help page][job-id] says "Job IDs are only retained in our system for 48 hours."
+- **API:** the status endpoint returned the whole job object 97 hours after the job finished.
+- **Evidence:** [Retention](docs/research/live-api.md#retention).
 
 ### Realtime: the output sample lacks the `job` object
 
@@ -237,6 +250,7 @@ Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the p
 
 [response-codes]: https://developers.oxylabs.io/products/web-scraper-api/response-codes
 [help-response-codes]: https://developers.oxylabs.io/help-center/troubleshooting/response-codes-for-web-scraper-api
+[job-id]: https://developers.oxylabs.io/help-center/troubleshooting/where-can-i-find-my-scraping-job-id
 [integration-methods]: https://developers.oxylabs.io/products/web-scraper-api/integration-methods
 [realtime]: https://developers.oxylabs.io/products/web-scraper-api/integration-methods/realtime
 [push-pull]: https://developers.oxylabs.io/products/web-scraper-api/integration-methods/push-pull

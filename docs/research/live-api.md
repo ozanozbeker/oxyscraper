@@ -1253,8 +1253,22 @@ A test that needs free jobs cannot rely on a host that does not resolve.
 
 ### Retention
 
-A later session can fetch these jobs at 24, 48 and 72 hours after their finish times, for free.
-The Push-Pull page states at least 24 hours, and the job ID help page says 48 ([Push-Pull][push-pull], [job ID help][job-id]).
+Results expire between 4 and 78 hours after the job finishes, and the job object outlives them.
+The Push-Pull page states at least 24 hours, and the job ID help page says Oxylabs keeps job IDs for 48 ([Push-Pull][push-pull], [job ID help][job-id]).
+
+A probe on 2026-09-28, from 20:54 to 21:17 UTC, sent only status and results GETs, so it billed nothing.
+It read the jobs in the table below, 2 jobs from [Cloud Storage](cloud-storage.md) that finished on 2026-09-25 at 14:33 UTC, and 5 jobs from [What a live test shows about parameters](live-parameters.md) that finished between 16:47 and 16:55 UTC on 2026-09-28.
+
+- The status endpoint returned 200 and the whole job object for every job, including the oldest, 97 hours after it finished.
+  The object still held every parameter, `status` and `updated_at`.
+- For the jobs 78 to 97 hours old, the results and content endpoints returned 204.
+  `x-oxylabs-job-status` still read `done`, or `faulted` for the fault job.
+  [Response Codes][response-codes] gives 404 for a job that is no longer available.
+- For the jobs 4 hours old, the results endpoint returned 200.
+- A made-up job ID returned 404 from the results endpoint.
+
+So a 204 whose `x-oxylabs-job-status` reads `done` means the results expired.
+Fetching the jobs from 2026-09-28 again at 24, 48 and 72 hours after they finished would narrow the window, for free.
 
 | Job ID | Source | Status | Finished (UTC) |
 | --- | --- | --- | --- |

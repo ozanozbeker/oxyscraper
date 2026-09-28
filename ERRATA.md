@@ -2,7 +2,7 @@
 
 This file lists errors and gaps in the Oxylabs docs that live tests found, to report upstream.
 GitBook exports the docs to `oxylabs/gitbook-public-english`, which is private, so the docs have no public issue tracker.
-Each entry cites the page as published on 2026-09-25 and links the test behind it.
+Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the parameter entries, and links the test behind it.
 
 ## Statements the API contradicts
 
@@ -81,6 +81,20 @@ Each entry cites the page as published on 2026-09-25 and links the test behind i
 - **API:** only `{{ job_id }}`, `{{ source }}`, `{{ query }}` and `{{ extension }}` resolved.
   `{{ created_at }}`, `{{ url }}`, `{{ geo_location }}`, `{{ client_notes }}` and six other fields stayed in the object name as literal text.
 - **Evidence:** [Variables](docs/research/cloud-storage.md#variables).
+
+### Push-Pull: a batch takes a `prompt` array
+
+- **Docs:** [Push-Pull][push-pull] allows "up to 5,000 `query` or `url` parameter values within a single batch request."
+- **API:** a `perplexity` batch with a `prompt` array created a job for each value.
+  The API's own 400 for other input keys also names only `query` and `url`.
+- **Evidence:** [Input keys](docs/research/live-parameters.md#input-keys).
+
+### YouTube guide for AI: `youtube_video_trainability` takes no batch
+
+- **Docs:** the [YouTube guide for AI][yt-guide] batches `youtube_video_trainability` with a `query` list.
+- **API:** that batch returned 202 with no jobs, and ``Source `youtube_video_trainability` is not available with a batch request.`` for each value.
+  A `video_id` list returned 400.
+- **Evidence:** [Input keys](docs/research/live-parameters.md#input-keys).
 
 ## Behaviour the docs leave out
 
@@ -185,6 +199,42 @@ Each entry cites the page as published on 2026-09-25 and links the test behind i
   The object drops `type` from each result, gives `parse` as an integer and adds `job.client`, which holds the API username.
 - **Evidence:** [What the object holds](docs/research/cloud-storage.md#what-the-object-holds) and [Output types](docs/research/cloud-storage.md#output-types).
 
+### Push-Pull: 97 of the 123 sources take no batch
+
+- **Docs:** [Push-Pull][push-pull] documents the batch endpoint without limiting it to any source.
+- **API:** only `universal`, the Amazon, Google and Bing sources, the LLM sources, and `youtube_download`, `youtube_metadata` and `youtube_subtitles` took a batch.
+  Every other source returned ``Source `<source>` is not available with a batch request.`` for each value.
+- **Evidence:** [Sources that take a batch](docs/research/live-parameters.md#sources-that-take-a-batch).
+
+### Unknown parameters return 202 and have no effect
+
+- **Docs:** no page says what the API does with a parameter it does not know.
+- **API:** an unknown top-level key, an unknown `context` key, and a key that belongs to another source all returned 202.
+  The job object left them out, and the job ran and billed.
+- **Evidence:** [Unknown keys](docs/research/live-parameters.md#unknown-keys).
+
+### Rate Limits: a batch over the rendered limit returns 429 as a whole
+
+- **Docs:** [Rate Limits][rate-limits] gives Starter 13 rendered jobs per second, and does not say how a batch counts against that.
+- **API:** a batch of 14 rendered values returned 429 with `"message": "Too many requests. (Total Render Dynamic)."`, and created no job.
+  A batch of 13 took 13 from the rendered limit.
+- **Evidence:** [Rendered batches](docs/research/live-parameters.md#rendered-batches).
+
+### E-Commerce Localization: an Amazon postal code that does not exist faults the job
+
+- **Docs:** [E-Commerce Localization][ecom-loc] takes a postal code or an alpha-2 code on Amazon, and does not say what an invalid value does.
+- **API:** a value in the wrong form for the `domain`, such as `United States` on `com`, returned 400.
+  A well-formed postal code that does not exist, `99999`, faulted the job after 120 seconds.
+- **Evidence:** [Amazon location](docs/research/live-parameters.md#amazon-location).
+
+### Amazon Best Sellers: a batch bills a job for an empty `query`
+
+- **Docs:** [Best Sellers][amz-bestsellers] marks `query`, a browse node ID, as required, and does not say what an empty one does.
+- **API:** a batch with two empty `query` values created two jobs.
+  Both fetched a page titled "Amazon Best Sellers: Best undefined", ended `done` and billed as rendered results.
+  Every other source that takes a batch failed an empty value on its own.
+- **Evidence:** [Sources that take a batch](docs/research/live-parameters.md#sources-that-take-a-batch).
+
 [response-codes]: https://developers.oxylabs.io/products/web-scraper-api/response-codes
 [help-response-codes]: https://developers.oxylabs.io/help-center/troubleshooting/response-codes-for-web-scraper-api
 [integration-methods]: https://developers.oxylabs.io/products/web-scraper-api/integration-methods
@@ -195,3 +245,6 @@ Each entry cites the page as published on 2026-09-25 and links the test behind i
 [usage-statistics]: https://developers.oxylabs.io/products/web-scraper-api/usage-and-billing/usage-statistics
 [cloud-storage]: https://developers.oxylabs.io/products/web-scraper-api/features/result-processing-and-storage/cloud-storage
 [file-name-templating]: https://developers.oxylabs.io/products/web-scraper-api/features/result-processing-and-storage/cloud-storage/file-name-templating
+[yt-guide]: https://developers.oxylabs.io/api-targets/video-and-social-media/youtube/youtube-scraping-guide-for-ai
+[ecom-loc]: https://developers.oxylabs.io/products/web-scraper-api/features/localization/e-commerce-localization
+[amz-bestsellers]: https://developers.oxylabs.io/api-targets/e-commerce/amazon/best-sellers

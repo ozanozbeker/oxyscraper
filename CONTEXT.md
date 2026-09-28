@@ -41,3 +41,18 @@ _Avoid_: format
 
 **Cloud Storage**: The Oxylabs feature that uploads a job's result to the caller's bucket, after the caller grants Oxylabs write access.
 _Avoid_: bucket upload
+
+### oxy
+
+These terms name parts of oxy's own API, so Oxylabs' docs do not use them.
+
+**Payload**: A pydantic model of one job's parameters, which oxy sends as the body of a submission.
+`Payload` itself accepts any source, and each source that someone has worked on has its own subclass, such as `AmazonProduct`.
+_Avoid_: spec, request, query
+
+**Session**: The object that submits jobs and polls them in the background, for as long as its `with` block runs.
+Leaving the block stops every run that has not finished.
+_Avoid_: client, connection
+
+**Run**: The jobs that one `execute` or `stream` call submits, which oxy returns as each job finishes.
+_Avoid_: result, which is one page of one job

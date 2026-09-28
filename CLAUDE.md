@@ -21,6 +21,17 @@ See `docs/agents/domain.md`.
 
 When the live API contradicts the Oxylabs docs, or does something they leave out, add an entry to `ERRATA.md`.
 
+## Git
+
+Every change reaches `main` through a pull request, the maintainer's included.
+CI then runs before the change lands.
+A direct push has no pull request, so release-please cannot correct its changelog entry with `BEGIN_COMMIT_OVERRIDE`.
+
+When told to commit, commit on a new branch, never on `main`.
+Push the branch and open a pull request with `gh pr create`.
+Then `gh pr merge --auto --squash` merges it once the required checks pass.
+The squash commit takes the pull request's title, and release-please reads that commit, so the title follows Conventional Commits.
+
 ## Writing
 
 These rules cover every piece of prose I read: docstrings, comments, error messages, config comments, documentation, commit messages, issues and chat.

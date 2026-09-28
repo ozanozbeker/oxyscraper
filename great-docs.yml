@@ -1,0 +1,21 @@
+# Each build generates `great-docs/_quarto.yml` from this file, so edit this file, not that one.
+
+parser: numpy
+dynamic: true
+
+site_url: https://ozanozbeker.com/oxyscraper/
+
+authors:
+  - name: Ozan Ozbeker
+    role: Maintainer
+    email: github@ozanozbeker.com
+
+# great-docs 0.17 has no footer setting, so `site` passes Quarto's `include-after-body` through.
+# great-docs copies `assets/` into the build directory, where Quarto resolves this path.
+site:
+  include-after-body: assets/footer.html
+
+user_guide:
+  - section: Guide
+    contents:
+      - upgrading.qmd

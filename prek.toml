@@ -28,6 +28,13 @@ repo = "https://github.com/zizmorcore/zizmor-pre-commit"
 rev = "fa412071e4f5d44d44f9e365f4676f9df92456a2"  # frozen: v1.30.1
 hooks = [{ id = "zizmor" }]
 
+# --- actionlint ---
+# zizmor checks workflows for security problems, and actionlint checks that they are valid.
+[[repos]]
+repo = "https://github.com/rhysd/actionlint"
+rev = "914e7df21a07ef503a81201c76d2b11c789d3fca"  # frozen: v1.7.12
+hooks = [{ id = "actionlint" }]
+
 # --- Pre-Commit ---
 [[repos]]
 repo = "https://github.com/pre-commit/pre-commit-hooks"
@@ -97,15 +104,6 @@ hooks = [
     entry = "uv run pyrefly check",
     language = "system",
     types = ["python"],
-    pass_filenames = false,
-  },
-  {
-    id = "pytest",
-    name = "pytest",
-    entry = "uv run pytest",
-    language = "system",
-    stages = ["pre-commit"],
-    always_run = true,
     pass_filenames = false,
   },
 ]

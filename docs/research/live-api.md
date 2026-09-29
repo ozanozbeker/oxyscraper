@@ -1326,7 +1326,7 @@ Fetching the jobs from 2026-09-28 again at 24, 48 and 72 hours after they finish
 
 - Do API users under one account share a limit, and when does the domain throttle return its 429?
   No 429 in the run named a domain, even after 177 jobs failed on distinct names.
-  Oxylabs support can answer both.
+  [Support answers](job-lifecycle.md#support-answers) records what Oxylabs support said about both.
 - What does a 429 on the rendered limit return, and do forced rendering and LLM sources count as rendered?
   Exceeding it takes 14 rendered submissions in one window, and each of them could bill, so the run did not try.
 - When does 612 appear instead of 613?

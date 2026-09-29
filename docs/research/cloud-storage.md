@@ -325,6 +325,30 @@ content-length: 185
 
 This matches [Cloud Storage][cloud-storage], which says Cloud Storage works only with Push-Pull.
 
+## Probes on 2026-09-29
+
+Two probes for [How does oxy use Oxylabs Cloud Storage?](https://github.com/ozanozbeker/oxyscraper/issues/17) sent only GETs and fault jobs, so they billed nothing.
+
+### The entry after four days
+
+At 13:39 UTC, the status endpoint returned the 13000 entry for both jobs of the Uploads run's batch, 95 hours after they finished.
+Results expire 4 to 78 hours after a job finishes ([Retention](live-api.md#retention)), so a client can read the entry after the results expire.
+
+### An endpoint that does not resolve
+
+At 13:46 UTC, two fault jobs set `storage_type` to `s3_compatible` and `tos`.
+Each sent a `storage_url` of the form `https://FAKEKEYID:FAKESECRET@<name>.com/bucket/folder`, where `<name>` is an unregistered name.
+
+- Both submissions returned 202.
+- The job's `storage_url` hid the credentials, as `https://redacted:redacted@<name>.com/bucket/folder/<job_id>.json`.
+  The status endpoint returned the same value.
+- The API appended `/<job_id>.json` to the folder, as it does for `gcs`.
+- Both jobs ended `faulted` within 15 seconds.
+  At 14:01 UTC, 15 minutes later, `statuses` was still empty for both.
+  It was still empty at 14:34 UTC, 48 minutes after the jobs finished.
+
+So an upload to an endpoint that does not resolve recorded no code within 48 minutes, and a client that waits for the entry needs a limit.
+
 ## Open questions
 
 - **13103.**
@@ -336,6 +360,7 @@ This matches [Cloud Storage][cloud-storage], which says Cloud Storage works only
 - **Other storage types.**
   The account has no S3 bucket.
   The `event` name for S3, and whether S3 overwrites an existing name, stay open.
+  So does whether a successful `s3`, `tos` or `s3_compatible` upload records an entry at all.
 - **Characters in a name.**
   The run did not test a `query` with `/` or other characters that change a path.
 

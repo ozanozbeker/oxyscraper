@@ -46,6 +46,10 @@ _Avoid_: format
 **Cloud Storage**: The Oxylabs feature that uploads a job's result to the caller's bucket, after the caller grants Oxylabs write access.
 _Avoid_: bucket upload
 
+**Upload**: The object that Cloud Storage writes to the caller's bucket for one job, faulted jobs included.
+Oxylabs records its outcome as a code in the job's `statuses`.
+_Avoid_: delivery, export
+
 ### oxy
 
 These terms name parts of oxy's own API, so Oxylabs' docs do not use them.
@@ -67,3 +71,10 @@ _Avoid_: failed job, invalid job
 **Checkpoint**: The jobs that the API accepted for a run that has not finished, each with the payload it came from, kept at a location the caller names.
 A rerun with the same checkpoint fetches those jobs instead of submitting their payloads again.
 _Avoid_: record, job record, journal, manifest
+
+**Destination**: The location a caller names for a run's results. oxy writes each done job there as one file, named by the job's ID.
+_Avoid_: writer, output, sink
+
+**Progress**: The number of a run's payloads in each state, such as pending, done or faulted, at one moment.
+After the run ends, it is the run's summary.
+_Avoid_: status, which is one job's; stats

@@ -655,6 +655,27 @@ These matter only if oxy supports aggregators.
 - What does one record of an aggregated file hold?
   Test: read the file the trigger above delivers.
 
+## Support answers
+
+Oxylabs support answered three of the open questions on 2026-09-29, for [Ask Oxylabs support what the rate limits mean](https://github.com/ozanozbeker/oxyscraper/issues/25).
+Each answer cites only the docs, so none states a fact that the docs lack.
+
+- **Do API users under one account share one limit?**
+  Support said yes, and quoted 10 requests per API key and 100 requests across all API keys of one client.
+  Those numbers are the Dashboard API's limits ([Dashboard API][dashboard-api]).
+  The rate-limits page holds neither number and gives no limit per API user ([Rate Limits][rate-limits]), so the question stays open.
+  Test: two API users each submit fault jobs in the same second, and the run compares their `-remaining` values and the UUIDs in their header names.
+  [Fault jobs](live-api.md#fault-jobs) describes those jobs.
+- **What does the UUID in the header names identify?**
+  Support confirmed that no page says.
+- **Does the domain throttle return its 429 at submission?**
+  Support said yes, because the page gives the 429 as the response to a request made while the limit is in effect ([Rate Limits][rate-limits]).
+  That is a reading of the page, not a statement about the API.
+- **What happens when an account uses up its monthly results?**
+  Support said that Oxylabs bills no overage, and that the account has to buy more results.
+  The dashboard's Top up adds results for the current billing period ([Dashboard 101][dashboard]).
+  Support did not say what a submission returns once the results are used up.
+
 ## Sources
 
 ### Oxylabs docs
@@ -678,7 +699,8 @@ These matter only if oxy supports aggregators.
 - [LLMs and AI][llms-and-ai] states that LLM sources run only through Push-Pull, and documents `prompt`.
 - [YouTube Downloader][youtube-downloader] shows a batch with storage parameters and a 400 with `message`.
 - [Quick Start][quick-start] calls the 429 a concurrency limit.
-- [Dashboard 101][dashboard] shows several API users per account.
+- [Dashboard 101][dashboard] shows several API users per account, and the Top up that adds results.
+- [Dashboard API][dashboard-api] gives the Dashboard API's own rate limits, which support quoted.
 - [job ID help][job-id] gives the 48-hour job ID retention and `x-oxylabs-job-id`.
 - [help-center codes][help-response-codes] describes 612 and 613 as failed submissions.
 - [pricing help][pricing] lists the monthly results per target and plan.
@@ -710,6 +732,7 @@ These matter only if oxy supports aggregators.
 [youtube-downloader]: https://developers.oxylabs.io/api-targets/video-and-social-media/youtube/youtube-downloader
 [quick-start]: https://developers.oxylabs.io/get-started/quick-start-web-scraper-api
 [dashboard]: https://developers.oxylabs.io/help-center/dashboard/web-scraper-api-101-navigating-the-dashboard
+[dashboard-api]: https://developers.oxylabs.io/dashboard/dashboard-api
 [job-id]: https://developers.oxylabs.io/help-center/troubleshooting/where-can-i-find-my-scraping-job-id
 [help-response-codes]: https://developers.oxylabs.io/help-center/troubleshooting/response-codes-for-web-scraper-api
 [pricing]: https://developers.oxylabs.io/help-center/billing-and-payments/how-does-web-scraper-api-pricing-work

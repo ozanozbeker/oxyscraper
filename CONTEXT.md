@@ -68,9 +68,8 @@ _Avoid_: result, which is one page of one job
 **Rejection**: An error that the API returns for a payload instead of a job, so nothing bills.
 _Avoid_: failed job, invalid job
 
-**Checkpoint**: The jobs that the API accepted for a run that has not finished, each with the payload it came from, kept at a location the caller names.
-A rerun with the same checkpoint fetches those jobs instead of submitting their payloads again.
-_Avoid_: record, job record, journal, manifest
+**Run log**: The file that lists each payload of one run with what happened to it, and the ID of its job if the API created one.
+_Avoid_: job log, checkpoint, record, job record, journal, manifest, and log on its own, which means the lines the `oxyscraper` logger writes
 
 **Destination**: The location a caller names for a run's results. oxy writes each done job there as one file, named by the job's ID.
 _Avoid_: writer, output, sink

@@ -3,6 +3,7 @@
 This file lists errors and gaps in the Oxylabs docs that live tests found, to report upstream.
 GitBook exports the docs to `oxylabs/gitbook-public-english`, which is private, so the docs have no public issue tracker.
 Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the parameter and retention entries, and links the test behind it.
+The two entries on storage endpoints, the entry on a 400's `errors` list and the entries from the `universal` and Amazon runs cite the pages as published on 2026-09-29.
 
 ## Statements the API contradicts
 
@@ -109,6 +110,130 @@ Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the p
   A `video_id` list returned 400.
 - **Evidence:** [Input keys](docs/research/live-parameters.md#input-keys).
 
+### Any Domain: `content_encoding` defaults to `utf-8`, not `base64`
+
+- **Docs:** [Any Domain][any-domain] gives `base64` as the default of `content_encoding`.
+- **API:** a job without it showed `"content_encoding": "utf-8"` in its job object.
+  A PNG fetched without it came back as text with escaped bytes, which do not decode, and with `base64` it came back as Base64.
+- **Evidence:** [Rendering and output types](docs/research/live-universal.md#rendering-and-output-types).
+
+### Any Domain: a session lasts 25 minutes, not 10
+
+- **Docs:** [Any Domain][any-domain] says a `session_id` keeps its proxy "for up to 10 minutes".
+  [Proxy Location][proxy-loc] says "up to 25 minutes or 100 requests".
+- **API:** the result's `session_info` gave an `expires_at` 25 minutes after the session's first job, and a `remaining` of 99, then 98.
+- **Evidence:** [Sessions](docs/research/live-universal.md#sessions).
+
+### Any Domain: headers and cookies need their `force_*` key
+
+- **Docs:** [Any Domain][any-domain] lists `context:headers` and `context:cookies` without `force_headers` or `force_cookies`, and its "All parameters" example sends both without them.
+  [Headers, Cookies, Method][headers] adds the `force_*` key.
+- **API:** without the `force_*` key, the job ran and billed, and the site received neither the header nor the cookie.
+- **Evidence:** [Headers, cookies and method](docs/research/live-universal.md#headers-cookies-and-method).
+
+### Any Domain: the "All parameters" example returns 400
+
+- **Docs:** [Any Domain][any-domain] shows an example with "all available parameters", which sends `parse: true` for `https://example.com` with no instructions.
+- **API:** the example as written returned 400 with ``Parsing `https://example.com` url is allowed only with `parser_type` or `parsing_instructions` parameter.``
+- **Evidence:** [Headers, cookies and method](docs/research/live-universal.md#headers-cookies-and-method).
+
+### Proxy Location: `Germany` exits in Lithuania
+
+- **Docs:** [Proxy Location][proxy-loc] lists `Germany` among the countries that `geo_location` selects.
+- **API:** in four jobs, `Germany` and `DE` gave exit IPs that Cloudflare, ipinfo.io and ip-api.com place in Lithuania.
+  `France`, `United Kingdom` and `Japan` gave exit IPs in those countries.
+- **Evidence:** [Location](docs/research/live-universal.md#location).
+
+### List of parsing functions: a wrong `_args` shape can work or fail differently
+
+- **Docs:** [List of parsing functions][functions] says "Using the wrong shape does not fail the job: the field comes back `null`, `parse_status_code` is `12005`, and `_warnings` contains *received arguments of invalid type `array`* (or `str`)."
+- **API:** `xpath`, `xpath_one` and `css` with a bare string returned their usual output, with no warning.
+  `join` and `average` with an array returned `null` with `Failed to process function`.
+  `select_nth`, `regex_search` and `regex_find_all` behaved as documented.
+- **Evidence:** [Mistakes the API accepts](docs/research/live-universal.md#mistakes-the-api-accepts).
+
+### JS Rendering: `wait_time_s` takes 0
+
+- **Docs:** [JS Rendering & Browser Control][js] restricts `wait_time_s` to "0 < `wait_time_s` <= 60", with a default of 0.
+- **API:** `wait_time_s: 0` returned 202, and `-1` returned 400 with "Input should be greater than or equal to 0".
+  `timeout_s: 0` returned 400, as documented.
+- **Evidence:** [Checks at submission](docs/research/live-universal.md#checks-at-submission).
+
+### JS Rendering: an instruction after `fetch_resource` returns 500
+
+- **Docs:** [JS Rendering & Browser Control][js] says that after `fetch_resource`, "any subsequent instructions will not be executed".
+  It also says that "any inconsistency in regards to instruction format will result in a `400`".
+- **API:** a `wait`, a `click` or a second `fetch_resource` after `fetch_resource` returned 500 with an HTML error page, and created no job.
+  A `filter` that is not a valid regex did the same.
+  All 9 such submissions returned 500.
+- **Evidence:** [A 500 at submission](docs/research/live-universal.md#a-500-at-submission).
+
+### JS Rendering: `on_error: error` does not stop the instructions
+
+- **Docs:** [JS Rendering & Browser Control][js] says that `on_error: "error"`, the default, "Stops the execution of browser instructions."
+- **API:** after a `wait_for_element` that failed, the next `click` ran, with `on_error` unset, `error` or `skip`.
+  After a `click` on a missing selector, which gives a warning, the next instruction ran too.
+- **Evidence:** [Effects](docs/research/live-universal.md#effects).
+
+### JS Rendering: errors appear under `browser_instructions_errors`
+
+- **Docs:** [JS Rendering & Browser Control][js] puts errors and warnings "under the keys `browser_instructions_error` or `browser_instructions_warnings`".
+- **API:** errors appeared under `browser_instructions_errors`, and warnings under `browser_instructions_warnings`.
+- **Evidence:** [Effects](docs/research/live-universal.md#effects).
+
+### Amazon URL: the API alters the URL, and runs some URLs as another source
+
+- **Docs:** [URL][amz-url] says "We do not strip any parameters or alter your URLs in any other way."
+- **API:** every `amazon` job appended `language=<locale>` to its URL.
+  A product URL became an `amazon_product` job and a search URL an `amazon_search` job, and Usage Statistics counted them under those sources.
+  A `domain` sent beside the URL became the URL's own domain in the job object.
+- **Evidence:** [The `amazon` source](docs/research/live-amazon.md#the-amazon-source).
+
+### Amazon Product, Pricing, Best Sellers and URL: `com` takes 67 currencies, not USD alone
+
+- **Docs:** the four pages link [`currency_new.json`][currency-new], which lists USD alone for `com`: "While the US Amazon marketplace supports multiple currencies, for now, we only support the default currency, USD."
+- **API:** all six Amazon sources accepted the 67 codes for `com` that [`Amazon_search_currency_values.json`][currency-search] lists, and the [Search][amz-search] page links that file.
+  `XYZ` on `com` returned a 400 that listed the 67 codes, on every source.
+- **Evidence:** [Currencies](docs/research/live-amazon.md#currencies) and [Location rules](docs/research/live-amazon.md#location-rules).
+
+### Amazon Pricing: the currency example returns 400, and `context:currency` has no effect
+
+- **Docs:** [Pricing][amz-pricing] documents `context:currency`, and its code example sends `AUD` on `nl`.
+- **API:** the example returned 400 with ``Context parameter with key `currency` for domain `nl` is not valid. Available values: `EUR`.``
+  `GBP` on `de` passed the check and billed, and the parsed offers kept their prices in euros.
+- **Evidence:** [Locales and currencies](docs/research/live-amazon.md#locales-and-currencies).
+
+### Amazon Best Sellers: the currency example has no effect
+
+- **Docs:** [Best Sellers][amz-bestsellers] sends `AUD` on `com` in its code example.
+- **API:** the example billed, and its prices stayed in USD.
+  The Search page's currency file gives the reason: on `com`, a currency other than USD needs a `geo_location` outside the US, "Otherwise, the desired currency will not be applied."
+  The Best Sellers page and the currency file it links do not say so.
+- **Evidence:** [Locales and currencies](docs/research/live-amazon.md#locales-and-currencies).
+
+### Domain and Locale: `ae` defaults to Arabic, not English
+
+- **Docs:** [Domain and Locale][domain-locale] marks `en_AE`, English, as the default for `ae`, and says a caller who wants the default need not send `locale`.
+- **API:** without `locale`, an `ae` job fetched its URL with `language=ar_AE`, and the page came back in Arabic.
+  `locale: en_AE` returned it in English.
+- **Evidence:** [Domains and defaults](docs/research/live-amazon.md#domains-and-defaults).
+
+### E-Commerce Localization: `com.be` and `nl` take a delivery location, and `ae` takes any value
+
+- **Docs:** [E-Commerce Localization][ecom-loc] says "`cn`, `com.tr`, `com.be`, and `nl` do not support custom delivery locations."
+  It says `ae` "Accepts UAE city names as `geo_location`, e.g., `"geo_location": "Abu Dhabi"`, or 2-letter country codes."
+- **API:** `cn` and `com.tr` returned 400 for every value.
+  `DE` on `com.be` set the delivery location to Germany, and `NL` on `nl` set it to 1079 Amsterdam.
+  `ae` ran no check, and `90210` set a delivery location named "90210".
+- **Evidence:** [Locations](docs/research/live-amazon.md#locations) and [Location rules](docs/research/live-amazon.md#location-rules).
+
+### Amazon Search: `min_price: 0` passes, and sets no filter
+
+- **Docs:** [Search][amz-search] says `context:min_price` and `context:max_price` "Must be positive integers."
+- **API:** `min_price: -100` returned 400 with ``Parameter `context:min_price` must be a positive integer.``
+  `min_price: 0` returned 202 and billed, and the URL carried no price filter.
+- **Evidence:** [Free checks](docs/research/live-amazon.md#free-checks) and [Sorting and filters](docs/research/live-amazon.md#sorting-and-filters).
+
 ## Behaviour the docs leave out
 
 ### Response Codes: Realtime returns 408 past its TTL
@@ -212,6 +337,20 @@ Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the p
   The object drops `type` from each result, gives `parse` as an integer and adds `job.client`, which holds the API username.
 - **Evidence:** [What the object holds](docs/research/cloud-storage.md#what-the-object-holds) and [Output types](docs/research/cloud-storage.md#output-types).
 
+### Cloud Storage: an endpoint that does not resolve leaves `statuses` empty
+
+- **Docs:** [Response Codes][response-codes] says to "check `statuses` if results do not arrive in your storage", and lists 13001 Upload Failed and 13102 No Such Path.
+- **API:** two fault jobs set `storage_type` to `s3_compatible` and `tos`, with a `storage_url` whose host does not resolve.
+  Both ended `faulted`, and 48 minutes later `statuses` was still empty.
+- **Evidence:** [An endpoint that does not resolve](docs/research/cloud-storage.md#an-endpoint-that-does-not-resolve).
+
+### Cloud Storage: the job object hides the credentials in `storage_url`
+
+- **Docs:** [Cloud Storage][cloud-storage] puts the access key and secret in `storage_url` for `tos` and `s3_compatible`.
+  [File name templating][file-name-templating] says the job's `storage_url` shows the resolved path, and does not say what happens to the credentials.
+- **API:** the submission and the status endpoint returned `https://redacted:redacted@<host>/bucket/folder/<job_id>.json`.
+- **Evidence:** [An endpoint that does not resolve](docs/research/cloud-storage.md#an-endpoint-that-does-not-resolve).
+
 ### Push-Pull: 97 of the 123 sources take no batch
 
 - **Docs:** [Push-Pull][push-pull] documents the batch endpoint without limiting it to any source.
@@ -222,9 +361,19 @@ Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the p
 ### Unknown parameters return 202 and have no effect
 
 - **Docs:** no page says what the API does with a parameter it does not know.
-- **API:** an unknown top-level key, an unknown `context` key, and a key that belongs to another source all returned 202.
+- **API:** on `universal` and `amazon_search`, an unknown top-level key, an unknown `context` key, and a key that belongs to another source all returned 202.
   The job object left them out, and the job ran and billed.
-- **Evidence:** [Unknown keys](docs/research/live-parameters.md#unknown-keys).
+  `walmart_product` returned 400 for an unknown key instead, with `[foo_bar]: This field was not expected.`
+- **Evidence:** [Unknown keys](docs/research/live-parameters.md#unknown-keys) and [Probes on 2026-09-29](docs/research/live-parameters.md#probes-on-2026-09-29).
+
+### Response Codes: a 400 can list its errors under `errors`, with no `message`
+
+- **Docs:** [Response Codes][response-codes] says a 400's body "has a more specific error message", and does not give its shape.
+- **API:** most 400s carried a `message` string.
+  `walmart_product` with a missing or unknown key returned an `errors` list of strings and no `message`, such as `["[product_id]: This field is missing.", "[query]: This field was not expected."]`.
+  A mistake in `parsing_instructions` returned an `errors` list of objects with `_fn`, `_fn_idx`, `_msg` and `_path`.
+  A mistake in `browser_instructions` returned an `errors` object with a `message`, and for a failed check the `instruction` and pydantic's `validation_errors`.
+- **Evidence:** [Probes on 2026-09-29](docs/research/live-parameters.md#probes-on-2026-09-29), [Mistakes the API returns 400 for](docs/research/live-universal.md#mistakes-the-api-returns-400-for) and [Checks at submission](docs/research/live-universal.md#checks-at-submission).
 
 ### Rate Limits: a batch over the rendered limit returns 429 as a whole
 
@@ -240,13 +389,193 @@ Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the p
   A well-formed postal code that does not exist, `99999`, faulted the job after 120 seconds.
 - **Evidence:** [Amazon location](docs/research/live-parameters.md#amazon-location).
 
-### Amazon Best Sellers: a batch bills a job for an empty `query`
+### Amazon Best Sellers: an empty or unknown `query` bills a rendered page
 
-- **Docs:** [Best Sellers][amz-bestsellers] marks `query`, a browse node ID, as required, and does not say what an empty one does.
+- **Docs:** [Best Sellers][amz-bestsellers] marks `query`, a browse node ID, as required, and does not say what an empty or unknown one does.
 - **API:** a batch with two empty `query` values created two jobs.
-  Both fetched a page titled "Amazon Best Sellers: Best undefined", ended `done` and billed as rendered results.
+  A single submission with `query: ""` and one with `query: "abc"` created a job each.
+  Every such job fetched a page titled "Amazon Best Sellers: Best undefined", ended `done` and billed as a rendered result.
   Every other source that takes a batch failed an empty value on its own.
-- **Evidence:** [Sources that take a batch](docs/research/live-parameters.md#sources-that-take-a-batch).
+- **Evidence:** [Sources that take a batch](docs/research/live-parameters.md#sources-that-take-a-batch) and [Input and page rules](docs/research/live-amazon.md#input-and-page-rules).
+
+### Any Domain: `universal` takes `context` keys that no page names
+
+- **Docs:** [Any Domain][any-domain], [Headers, Cookies, Method][headers] and [E-Commerce Localization][ecom-loc] name 10 `context` keys for `universal`.
+- **API:** the job object lists 16.
+  `hc_policy`, `parse_json_schema`, `parse_json_prompt`, `proxy_location` and `delivery_location` appear on no page.
+  `fulfillment_type` appears only for Walmart's non-US domains.
+- **Evidence:** [Context keys](docs/research/live-universal.md#context-keys) and [Context keys by source](docs/research/live-parameters.md#context-keys-by-source).
+
+### Any Domain: a redirect faults the job when `follow_redirects` is `false`
+
+- **Docs:** [Any Domain][any-domain] describes `follow_redirects` and `successful_status_codes`, and says redirects are followed "up to a limit of 10 links".
+- **API:** with `follow_redirects: false`, a 302 faulted the job, unbilled.
+  `successful_status_codes: [302]` returned 400 with ``Context `successful_status_codes` value 302 is not supported (nor other status codes from the same family)``.
+  A chain of 11 redirects faulted the job with `status_code: 400` in its results entry.
+- **Evidence:** [Redirects and status codes](docs/research/live-universal.md#redirects-and-status-codes).
+
+### Any Domain: a page with an empty body faults the job
+
+- **Docs:** [Traffic and Billing][billing] bills `2xx` and `4xx` results, and [Any Domain][any-domain] says `successful_status_codes` returns the content of the codes it lists.
+- **API:** empty pages with status 200, 404 and 503 faulted the job, unbilled, even with 503 in `successful_status_codes`.
+  A 404 page with a body, and a 503 page with a body and 503 in `successful_status_codes`, ended `done` and billed.
+- **Evidence:** [Redirects and status codes](docs/research/live-universal.md#redirects-and-status-codes).
+
+### Headers, Cookies, Method: a custom `User-Agent` has no effect
+
+- **Docs:** [Headers, Cookies, Method][headers] says the API sends custom headers "together with the predefined headers set".
+- **API:** with `force_headers: true`, a custom `X-Oxy-Test` header reached the site, and a custom `User-Agent` did not.
+  The site received Oxylabs' own agent.
+- **Evidence:** [Headers, cookies and method](docs/research/live-universal.md#headers-cookies-and-method).
+
+### Headers, Cookies, Method: `http_method` also takes `OPTIONS`
+
+- **Docs:** [Headers, Cookies, Method][headers] describes `GET`, the default, and `POST`.
+- **API:** `put` returned 400 with `HTTP method put is not supported. Supported methods are: GET, POST, OPTIONS.`
+  `options` and `POST` returned 202.
+- **Evidence:** [Values the API checks](docs/research/live-universal.md#values-the-api-checks).
+
+### User Agent Type: five more values pass, and pick no browser
+
+- **Docs:** [User Agent Type][uat] lists seven values.
+- **API:** `desktop_chrome`, `desktop_edge`, `desktop_firefox`, `desktop_opera` and `desktop_safari`, which SDK 3.0.0 sends, returned 202 and billed.
+  In 20 jobs, 4 received an agent of the browser the value names, and the rest received other desktop browsers.
+  Any other value returned 400.
+- **Evidence:** [User agent types](docs/research/live-universal.md#user-agent-types).
+
+### Proxy Location: an unknown `geo_location` bills with no location
+
+- **Docs:** [Proxy Location][proxy-loc] lists the values `geo_location` supports, and does not say what another value does.
+- **API:** `universal` accepted every string, including `Atlantis`, lowercase `de` and `90210`.
+  `Atlantis` and `de` billed, and their exit IPs were in the US.
+  `DE` gave the same exit IP as `Germany`, and `FR` the same as `France`.
+- **Evidence:** [Location](docs/research/live-universal.md#location).
+
+### Custom Parser: submission checks the structure, not the arguments
+
+- **Docs:** [Custom Parser: Getting started][parser-start] says that instructions "referencing a non-existent function are rejected upon submission", and does not say what else is.
+- **API:** a missing `_fn`, a `_fns` that is not a list, an `_items` or field that is not an object, an unknown key in a function entry, empty instructions and an unknown `_on_error` returned 400.
+  Any `_args`, an invalid XPath and an invalid regex returned 202, and the job billed with `parse_status_code: 12005`.
+- **Evidence:** [Mistakes the API returns 400 for](docs/research/live-universal.md#mistakes-the-api-returns-400-for) and [Mistakes the API accepts](docs/research/live-universal.md#mistakes-the-api-accepts).
+
+### Custom Parser: `_on_error` also takes `warn` and `error`
+
+- **Docs:** [Parsing instruction examples][parse-examples] describes `"_on_error": "suppress"` only.
+- **API:** `_on_error: ignore` returned 400 with ``Invalid `_on_error` value `ignore`, must be one of suppress, warn, error``.
+  `warn` behaved like the default.
+  `error` put the failure under `_errors` and set `parse_status_code: 12004`, and the result billed.
+- **Evidence:** [`_on_error`](docs/research/live-universal.md#_on_error).
+
+### Custom Parser: `parse` without instructions names an undocumented `parser_type`
+
+- **Docs:** [Any Domain][any-domain] says `parse: true` returns parsed data "as long as a dedicated parser exists for the submitted URL's page type", and no page documents a `parser_type` parameter.
+- **API:** `parse: true` without instructions, for a page with no dedicated parser, returned 400 with ``Parsing `<url>` url is allowed only with `parser_type` or `parsing_instructions` parameter``.
+  `parser_type: custom` and `parser_type: preset` returned 202, and other values returned 400.
+  A `custom` job without instructions billed with `parse_status_code: 12003`.
+- **Evidence:** [`parse` without instructions](docs/research/live-universal.md#parse-without-instructions).
+
+### JS Rendering: `scroll` takes no `x` or `y`
+
+- **Docs:** [JS Rendering & Browser Control][js] gives `scroll` the arguments `x: int` and `y: int`.
+- **API:** `scroll` without `x` and `y` returned 202 and billed, and the page did not scroll.
+- **Evidence:** [Checks at submission](docs/research/live-universal.md#checks-at-submission) and [Effects](docs/research/live-universal.md#effects).
+
+### JS Rendering: instructions that run too long fault the job
+
+- **Docs:** [JS Rendering & Browser Control][js] limits each `wait_time_s` to 60 seconds, and sets no limit on a list of instructions.
+- **API:** five `wait` instructions of 60 seconds returned 202, and the job faulted with 613 after 325 seconds, unbilled.
+- **Evidence:** [Effects](docs/research/live-universal.md#effects).
+
+### Amazon: the sources take `context` keys that no page names
+
+- **Docs:** the Amazon pages name eight `context` keys between them, and [Sellers][amz-sellers] names none.
+- **API:** every Amazon job object lists `force_headers`, `force_cookies`, `hc_policy`, `parse_json_schema`, `parse_json_prompt`, `check_empty_geo` and `safe_search`, and `parse: true` adds `successful_parse_status_codes`.
+  `amazon_pricing` lists `condition`, `amazon_sellers` lists `currency`, `amazon_bestsellers` lists `category_id`, and `amazon` lists `cookies` and `headers`.
+  No page names `check_empty_geo`, `parse_json_schema`, `parse_json_prompt` or `condition`.
+  `hc_policy` and `successful_parse_status_codes` appear only in a sample job object on [Google AI Mode][g-ai-mode].
+  `condition: new` added `&condition=new` to the offers URL, and `check_empty_geo: true` without a `geo_location` faulted the job.
+  `category_id: electronics` on `amazon_bestsellers` left the job `pending` for at least 44 minutes.
+- **Evidence:** [Context keys by source](docs/research/live-amazon.md#context-keys-by-source).
+
+### Domain and Locale: the API takes `co.za`
+
+- **Docs:** [Domain and Locale][domain-locale] lists 23 Amazon domains, and neither currency file lists `co.za`.
+- **API:** `co.za` passed every check, and its job fetched `amazon.co.za` with `language=en_ZA` and prices in ZAR.
+  Its checks allow the locale `en_ZA` and the currency `ZAR`.
+- **Evidence:** [Domains](docs/research/live-amazon.md#domains) and [Domains and defaults](docs/research/live-amazon.md#domains-and-defaults).
+
+### Amazon currency files: `cn` and `ie` are missing, and `ie` runs no check
+
+- **Docs:** [`currency_new.json`][currency-new] and [`Amazon_search_currency_values.json`][currency-search] list 21 domains, and neither lists `cn` or `ie`.
+- **API:** `cn` allows `CNY` only.
+  `ie` runs no currency check: `XYZ`, `USD` and `eur` passed, and `XYZ` billed with prices in EUR.
+- **Evidence:** [Currencies](docs/research/live-amazon.md#currencies).
+
+### E-Commerce Localization: eight Amazon domains run no `geo_location` check
+
+- **Docs:** [E-Commerce Localization][ecom-loc] takes a postal code inside the marketplace's country and a 2-letter country code outside it.
+- **API:** `ae`, `com.be`, `eg`, `ie`, `pl`, `sa`, `se` and `sg` accepted every value, including `90210` and lowercase `de`.
+  `90210` on `pl` faulted the job at once, and `90210` on `ae` billed.
+  On `com`, `XX` passed and billed with Amazon's default location.
+- **Evidence:** [Locations](docs/research/live-amazon.md#locations) and [Location rules](docs/research/live-amazon.md#location-rules).
+
+### User Agent Type: a rendered job ignores it
+
+- **Docs:** [User Agent Type][uat] and the Amazon pages describe `user_agent_type` as the device type, and do not tie it to rendering.
+- **API:** `mobile` returned Amazon's mobile page on every Amazon source that ran without rendering.
+  With `render: html` on `amazon_product`, and on `amazon_bestsellers`, which Oxylabs always renders, `mobile` returned the desktop page.
+- **Evidence:** [Top-level parameters](docs/research/live-amazon.md#top-level-parameters).
+
+### Amazon Product, Pricing and Sellers: an input that passes the check can bill a 404 page
+
+- **Docs:** [Product][amz-product] and [Pricing][amz-pricing] take a "10-symbol ASIN code", and [Sellers][amz-sellers] a seller ID.
+  No page says what an input that does not exist does.
+- **API:** an ASIN shorter than 10 characters returned ``ASIN length is not valid.``, and a lowercase one ``ASIN should only contain alphanumeric values.``
+  An 11-character ASIN, an ASIN that does not exist and the seller ID `abc` returned 202, and each billed a 404 page.
+- **Evidence:** [Input and page rules](docs/research/live-amazon.md#input-and-page-rules).
+
+### Amazon: the docs give no page limits
+
+- **Docs:** [Search][amz-search], [Pricing][amz-pricing] and [Best Sellers][amz-bestsellers] document `start_page` and `pages` without a limit, and the other three pages do not document them.
+- **API:** `pages` above 20 returned ``Parameter `pages` should not exceed 20``.
+  A page past the last billed on `amazon_search` and `amazon_pricing`, and faulted on `amazon_bestsellers`.
+  On `amazon_product`, `amazon_sellers` and `amazon`, `pages: 2` became 1, and `start_page: 2` billed the first page labelled as page 2.
+- **Evidence:** [Free checks](docs/research/live-amazon.md#free-checks), [Top-level parameters](docs/research/live-amazon.md#top-level-parameters) and [Input and page rules](docs/research/live-amazon.md#input-and-page-rules).
+
+### Amazon: the page types that `amazon` parses are not listed
+
+- **Docs:** the [Amazon][amazon] overview limits parsing on `amazon` to "URLs of specific Amazon page types", and links [Domain and Locale][domain-locale], which lists no page types.
+- **API:** `parse: true` with a help page URL returned ``Parsing with `url` parameter is not allowed for `amazon` source.``
+  Product and search URLs ran as `amazon_product` and `amazon_search` jobs, which parse.
+- **Evidence:** [The `amazon` source](docs/research/live-amazon.md#the-amazon-source).
+
+### Amazon Product: a `parse` that is not a boolean becomes `false`
+
+- **Docs:** [Product][amz-product] says `parse` "Returns parsed data when set to `true`".
+- **API:** `parse: "yes"` returned 202, the job object held `parse: false`, and the job billed a raw result.
+- **Evidence:** [Input and page rules](docs/research/live-amazon.md#input-and-page-rules).
+
+### JS Rendering: `render: ""` faults an `amazon_bestsellers` job
+
+- **Docs:** [JS Rendering & Browser Control][js] says Oxylabs enforces rendering on some page types, and that `"render": ""` disables it.
+  Its list of those page types names `amazon_bestsellers`.
+- **API:** `render: ""` set `is_render_forced: false`, and both such jobs faulted with 613 after 77 and 97 seconds, unbilled.
+  So every billed `amazon_bestsellers` result is rendered.
+- **Evidence:** [Forced rendering](docs/research/live-amazon.md#forced-rendering).
+
+### Rate Limits: a job that Oxylabs renders by force carries no rendered-limit header
+
+- **Docs:** [Rate Limits][rate-limits] gives Starter 13 rendered jobs per second, and does not say whether a job that Oxylabs renders by force counts against that.
+- **API:** every `amazon_bestsellers` submission without `render` carried only the total limit's headers, and the one with `render: html` carried the rendered limit's too.
+  Usage Statistics counted all 15 of the run's `amazon_bestsellers` results as rendered.
+- **Evidence:** [Forced rendering](docs/research/live-amazon.md#forced-rendering).
+
+### Response Codes: a faulted job can have no results entry
+
+- **Docs:** [Response Codes][response-codes] gives 612 and 613 for a job that Oxylabs failed, and does not say what the results endpoint returns for one.
+- **API:** two `cn` jobs faulted after 5 and 6 minutes, and the results endpoint returned 204 with `x-oxylabs-job-status: faulted` for them, still 22 and 28 minutes later.
+  An `amazon_search` job with `90210` on `pl` faulted in the second it was created, and its one results entry carried `status_code: 400`.
+- **Evidence:** [Faulted and stuck jobs](docs/research/live-amazon.md#faulted-and-stuck-jobs).
 
 [response-codes]: https://developers.oxylabs.io/products/web-scraper-api/response-codes
 [help-response-codes]: https://developers.oxylabs.io/help-center/troubleshooting/response-codes-for-web-scraper-api
@@ -262,3 +591,22 @@ Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the p
 [yt-guide]: https://developers.oxylabs.io/api-targets/video-and-social-media/youtube/youtube-scraping-guide-for-ai
 [ecom-loc]: https://developers.oxylabs.io/products/web-scraper-api/features/localization/e-commerce-localization
 [amz-bestsellers]: https://developers.oxylabs.io/api-targets/e-commerce/amazon/best-sellers
+[any-domain]: https://developers.oxylabs.io/api-targets/overview
+[headers]: https://developers.oxylabs.io/products/web-scraper-api/features/http-context-and-job-management/headers-cookies-method
+[uat]: https://developers.oxylabs.io/products/web-scraper-api/features/http-context-and-job-management/user-agent-type
+[proxy-loc]: https://developers.oxylabs.io/products/web-scraper-api/features/localization/proxy-location
+[js]: https://developers.oxylabs.io/products/web-scraper-api/features/js-rendering-and-browser-control
+[functions]: https://developers.oxylabs.io/products/web-scraper-api/features/custom-parser/writing-instructions-manually/list-of-functions
+[parse-examples]: https://developers.oxylabs.io/products/web-scraper-api/features/custom-parser/writing-instructions-manually/parsing-instruction-examples
+[parser-start]: https://developers.oxylabs.io/products/web-scraper-api/features/custom-parser/getting-started
+[billing]: https://developers.oxylabs.io/products/web-scraper-api/usage-and-billing/billing-information
+[amazon]: https://developers.oxylabs.io/api-targets/e-commerce/amazon
+[amz-product]: https://developers.oxylabs.io/api-targets/e-commerce/amazon/product
+[amz-search]: https://developers.oxylabs.io/api-targets/e-commerce/amazon/search
+[amz-pricing]: https://developers.oxylabs.io/api-targets/e-commerce/amazon/pricing
+[amz-sellers]: https://developers.oxylabs.io/api-targets/e-commerce/amazon/sellers
+[amz-url]: https://developers.oxylabs.io/api-targets/e-commerce/amazon/url
+[domain-locale]: https://developers.oxylabs.io/products/web-scraper-api/features/localization/domain-locale
+[currency-search]: https://files.gitbook.com/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FzrXw45naRpCZ0Ku9AjY1%2Fuploads%2FIAHLazcDOwZSiZ6s8IJt%2FAmazon_search_currency_values.json?alt=media
+[currency-new]: https://files.gitbook.com/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FzrXw45naRpCZ0Ku9AjY1%2Fuploads%2FNNybEQaVnTrc9ymR1NGE%2Fcurrency_new.json?alt=media
+[g-ai-mode]: https://developers.oxylabs.io/api-targets/search-engines/google/ai-mode

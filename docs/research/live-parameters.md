@@ -126,6 +126,21 @@ x-ratelimit-total-requests-00000000-0000-0000-0000-000000000000-remaining: 48
 }
 ```
 
+### Probes on 2026-09-29
+
+[Prototype: the CLI](https://github.com/ozanozbeker/oxyscraper/issues/19) sent three Push-Pull submissions at 15:13 UTC, to check the CLI's default input key.
+Each returned 400, so none billed.
+
+| Payload | Status | Body |
+| --- | --- | --- |
+| `{"source": "universal", "query": "https://sandbox.oxylabs.io/products/1"}` | 400 | ``{"message": "Parameter `url` is empty."}`` |
+| `{"source": "walmart_product", "query": "436012154"}` | 400 | `{"errors": ["[product_id]: This field is missing.", "[query]: This field was not expected."]}` |
+| `{"source": "walmart_product", "product_id": "436012154", "foo_bar": "x"}` | 400 | `{"errors": ["[foo_bar]: This field was not expected."]}` |
+
+`universal` leaves out an unknown key, as the table above shows, so a wrong input key fails only for the missing one.
+`walmart_product` rejects any key it does not take.
+Its body has an `errors` list of strings and no `message`, beside the usual `instance`, `timestamp` and `trace_id`.
+
 ## Context keys by source
 
 A job object lists every `context` key its source takes, with its default.

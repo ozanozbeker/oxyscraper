@@ -1117,6 +1117,47 @@ They did so 1 second after the Realtime response, and again 11 and 13 minutes la
 So the Push-Pull endpoints cannot fetch a Realtime result later.
 The job ID help page mentions the Realtime job ID only for support requests ([job ID help][job-id]).
 
+### Probes on 2026-09-29
+
+A probe on 2026-09-29, from 19:52 to 19:53 UTC, compared Realtime with Push-Pull for [Who sets the integration method: the caller, or oxy?](https://github.com/ozanozbeker/oxyscraper/issues/24).
+It sent 8 payloads through both methods and one Realtime job to each LLM source, and it billed 16 results.
+Every call used HTTP/2, and the Realtime host negotiated it as the data host does.
+
+Each pair sent one payload through both methods, one call at a time, and alternated which method went first.
+Push-Pull polled `/results` every 0.25 seconds.
+Each time runs from sending the submission to receiving the body with the result.
+
+| Payload | Realtime | Push-Pull |
+| --- | --- | --- |
+| `universal`, `https://sandbox.oxylabs.io/products/11` | 2.79 s | 3.68 s |
+| `universal`, `https://sandbox.oxylabs.io/products/12` | 1.32 s | 3.69 s |
+| `universal`, `https://sandbox.oxylabs.io/products/13` | 2.78 s | 3.29 s |
+| `universal`, `https://sandbox.oxylabs.io/products/14` | 3.17 s | 1.40 s |
+| `universal`, `https://sandbox.oxylabs.io/products/15` | 1.07 s | 1.43 s |
+| `amazon_product`, `B07FZ8S74R`, `parse: true` | 3.46 s | 5.91 s |
+| The same | 3.34 s | 3.54 s |
+| The same | 3.37 s | 3.67 s |
+
+- Realtime finished first in 7 of 8 pairs, by 0.4 seconds at the median.
+- In every pair, the two job objects held the same fields and values, except `_links`, which only Push-Pull returns.
+  The result entries held the same keys, and the sandbox content matched byte for byte.
+- Only values that vary per fetch differed: `_request` and `_response` on the sandbox, and `url`, `buybox` and `reviews` on Amazon.
+  The same Amazon fields also differed between two Realtime fetches.
+- Every Realtime job object kept `updated_at` equal to `created_at`, as in [A done Realtime job](#a-done-realtime-job).
+
+`chatgpt`, `perplexity` and `gemini` each returned 422 through Realtime after 0.13 seconds.
+[LLMs and AI][llms-and-ai] says that Realtime is not available for them, but not what it returns.
+The response carried only `date`, `content-type` and `content-length`, so it had no job ID and no rate-limit headers.
+
+```json
+{
+  "message": "Realtime integration is not supported for LLM sources. Please use Push-Pull.",
+  "instance": "/v1/queries",
+  "timestamp": "2026-09-29T19:53:21.838312425Z",
+  "trace_id": "6abc1731-1da245a8f7fa8b4374c5b94a"
+}
+```
+
 ## Usage Statistics counts
 
 ### Deltas
@@ -1317,6 +1358,7 @@ It sent every call from one machine, with HTTP/1.1 for single calls and HTTP/2 f
 - [Traffic and Billing][billing] states that faulted jobs and 429s are not billed.
 - [Quick Start][quick-start] calls the 429 a concurrency limit.
 - [job ID help][job-id] gives the 48-hour job ID retention and `x-oxylabs-job-id`.
+- [LLMs and AI][llms-and-ai] says that Realtime is not available for the LLM sources.
 
 ### Notes
 
@@ -1333,3 +1375,4 @@ It sent every call from one machine, with HTTP/1.1 for single calls and HTTP/2 f
 [js-rendering]: https://developers.oxylabs.io/products/web-scraper-api/features/js-rendering-and-browser-control
 [quick-start]: https://developers.oxylabs.io/get-started/quick-start-web-scraper-api
 [job-id]: https://developers.oxylabs.io/help-center/troubleshooting/where-can-i-find-my-scraping-job-id
+[llms-and-ai]: https://developers.oxylabs.io/api-targets/llms-and-ai

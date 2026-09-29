@@ -3,7 +3,7 @@
 This file lists errors and gaps in the Oxylabs docs that live tests found, to report upstream.
 GitBook exports the docs to `oxylabs/gitbook-public-english`, which is private, so the docs have no public issue tracker.
 Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the parameter and retention entries, and links the test behind it.
-The two entries on storage endpoints, the entry on a 400's `errors` list and the entries from the `universal` and Amazon runs cite the pages as published on 2026-09-29.
+The two entries on storage endpoints, the entry on a 400's `errors` list, the entries from the `universal` and Amazon runs and the entry on LLM sources through Realtime cite the pages as published on 2026-09-29.
 
 ## Statements the API contradicts
 
@@ -577,10 +577,19 @@ The two entries on storage endpoints, the entry on a 400's `errors` list and the
   An `amazon_search` job with `90210` on `pl` faulted in the second it was created, and its one results entry carried `status_code: 400`.
 - **Evidence:** [Faulted and stuck jobs](docs/research/live-amazon.md#faulted-and-stuck-jobs).
 
+### LLMs and AI: Realtime returns 422 for an LLM source
+
+- **Docs:** [LLMs and AI][llms-and-ai] says "Realtime and Proxy Endpoint are not available" for `chatgpt`, `gemini` and `perplexity`, and does not say what Realtime returns for them.
+  [Response Codes][response-codes] gives 422 for a payload that is not a valid JSON object.
+- **API:** a Realtime job for each of the three sources returned `422` in 0.13 seconds, with `"message": "Realtime integration is not supported for LLM sources. Please use Push-Pull."`.
+  The response carried no job ID, no `x-oxylabs-*` headers and no rate-limit headers.
+- **Evidence:** [Probes on 2026-09-29](docs/research/live-api.md#probes-on-2026-09-29).
+
 [response-codes]: https://developers.oxylabs.io/products/web-scraper-api/response-codes
 [help-response-codes]: https://developers.oxylabs.io/help-center/troubleshooting/response-codes-for-web-scraper-api
 [job-id]: https://developers.oxylabs.io/help-center/troubleshooting/where-can-i-find-my-scraping-job-id
 [integration-methods]: https://developers.oxylabs.io/products/web-scraper-api/integration-methods
+[llms-and-ai]: https://developers.oxylabs.io/api-targets/llms-and-ai
 [realtime]: https://developers.oxylabs.io/products/web-scraper-api/integration-methods/realtime
 [push-pull]: https://developers.oxylabs.io/products/web-scraper-api/integration-methods/push-pull
 [quick-start]: https://developers.oxylabs.io/get-started/quick-start-web-scraper-api

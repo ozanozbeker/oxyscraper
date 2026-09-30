@@ -1,0 +1,26 @@
+color:
+  palette:
+    midnight: "#0B0922"
+    navy: "#130F35"
+    lavender: "#B9B4E0"
+    orchid: "#B36BE0"
+    purple: "#7E0EA7"
+    aqua: "#2CC2AE"
+    green: "#109D8C"
+    pine: "#0B7064"
+    white: "#FFFFFF"
+    mist: "#F4F3FA"
+    blue: "#2F4BC7"
+    amber: "#9A5B00"
+    red: "#B3123E"
+  background: white
+  foreground: navy
+  primary: purple
+  secondary: pine
+  tertiary: green
+  success: pine
+  info: blue
+  warning: amber
+  danger: red
+  light: mist
+  dark: navy

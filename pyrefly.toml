@@ -1,1 +1,3 @@
 preset = "strict"
+# `tests/typing/` holds lines that must fail, so only the `pyrefly-typing` hook checks it, with `--expectations`.
+project-excludes = ["tests/typing"]

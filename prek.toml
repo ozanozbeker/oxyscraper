@@ -106,4 +106,13 @@ hooks = [
     types = ["python"],
     pass_filenames = false,
   },
+  # Each line marked `# E:` must fail to type-check and every other line must pass, so the types a caller sees stay public API.
+  {
+    id = "pyrefly-typing",
+    name = "pyrefly typing tests",
+    entry = "uv run pyrefly check --expectations tests/typing/",
+    language = "system",
+    types = ["python"],
+    pass_filenames = false,
+  },
 ]

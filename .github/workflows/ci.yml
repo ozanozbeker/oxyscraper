@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       # `--no-editable` installs the built wheel, so the tests import what PyPI would get.
-      - run: uv sync --locked --no-editable
+      - run: uv sync --locked --no-editable --all-extras
       - run: uv run --no-sync pytest
 
   # The next CPython, from its first beta to its final release, in a job that may fail.
@@ -46,7 +46,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           python-version: "3.15"
-      - run: uv sync --locked --no-editable
+      - run: uv sync --locked --no-editable --all-extras
       - run: uv run --no-sync pytest
 
   # Each floor in `pyproject.toml` is the oldest version that passes, so this job tests the floors.
@@ -62,8 +62,32 @@ jobs:
         with:
           python-version: "3.11"
           cache-suffix: lowest
-      - run: uv sync --resolution lowest-direct --no-editable
+      - run: uv sync --resolution lowest-direct --no-editable --all-extras
       - run: uv run --no-sync pytest
+
+  coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.14"
+      # Editable, so the report names the files under `src/`, where Codecov finds them.
+      - run: uv sync --locked --all-extras
+      - run: uv run --no-sync coverage run -m pytest
+      - run: uv run --no-sync coverage xml
+      # Codecov only draws the badge and comments on pull requests, so a failed upload fails no check.
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        continue-on-error: true
+        with:
+          use_oidc: true
+      # After the upload, so Codecov's comment shows the missed lines of a pull request that fails here.
+      - run: uv run --no-sync coverage report --fail-under=100
 
   # Local hooks miss a `--no-verify` commit and a fork's commits, so CI runs every hook on every file.
   lint:
@@ -106,7 +130,7 @@ jobs:
   # The ruleset requires this one job, so a change to the jobs above never touches the ruleset.
   all-green:
     if: always()
-    needs: [test, next-python, lowest, lint, docs]
+    needs: [test, next-python, lowest, coverage, lint, docs]
     runs-on: ubuntu-latest
     permissions: {}
     steps:

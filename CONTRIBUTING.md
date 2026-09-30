@@ -88,12 +88,31 @@ Below 1.0, a break needs no deprecation period.
 - `test` runs on Ubuntu, macOS and Windows, on every supported Python, against the built wheel.
 - `next-python` runs the next CPython from its first beta, and it may fail.
 - `lowest` runs the floor Python with each dependency at its floor.
+- `coverage` runs the tests on Ubuntu and the newest Python, and fails under 100% line coverage.
+  The config excludes only `TYPE_CHECKING` blocks, so every other exclusion is a `# pragma: no cover` that a reviewer sees.
+  The job uploads the report to Codecov, and a failed upload fails no check.
 - `lint` runs every prek hook on every file.
 - `docs` builds the site, which runs every example.
 - `all-green` passes when the jobs above pass.
   The `main` ruleset requires only this job and `title`, so a change to the jobs never touches the ruleset.
 
 pytest turns warnings into errors, so a new upstream deprecation fails the Dependabot pull request that brings it in.
+
+## Live tests
+
+pytest deselects the tests marked `live`, because they call the Oxylabs API and bill the account.
+A run bills about 11 results.
+
+- `live.yml` runs `pytest -m live` weekly and on manual dispatch, in the `live` environment.
+- The environment holds the secrets `OXY_WSA_USERNAME`, `OXY_WSA_PASSWORD` and `OXYLAKE_URI`.
+  A missing secret fails the run instead of skipping it.
+- The job stays outside `all-green`, so a fork's pull request never needs a secret and an Oxylabs outage blocks no merge.
+
+To run the suite locally, put the same three variables in `.env`:
+
+```sh
+uv run --env-file .env pytest -m live
+```
 
 ## Dependencies
 
@@ -152,17 +171,20 @@ A release published by hand starts the same two workflows, which makes it the re
 
 ## A new repo
 
-A package that adopts this standard copies `.github/`, `release-please-config.json`, `.release-please-manifest.json`, `great-docs.yml`, `prek.toml`, the pytest table in `pyproject.toml` and this file.
+A package that adopts this standard copies `.github/`, `release-please-config.json`, `.release-please-manifest.json`, `great-docs.yml`, `prek.toml`, the pytest and coverage tables in `pyproject.toml` and this file.
 It replaces `oxyscraper` in each, then needs this setup once:
 
 1. Install the maintainer's release App on the repo.
 2. Create the `release` environment for `main` only, with the variable `APP_CLIENT_ID` and the secret `APP_PRIVATE_KEY`.
 3. Create the `pypi` environment for `v*` tags only, with the maintainer as a required reviewer and no admin bypass.
-4. Add a pending trusted publisher on PyPI for `release.yml` and the `pypi` environment.
-5. Set Pages to deploy from GitHub Actions, and limit the `github-pages` environment to `v*` tags.
-6. Allow squash merges only, with the pull request title and description.
+4. Create the `live` environment for `main` only, with the secrets that the live tests read.
+5. Add a pending trusted publisher on PyPI for `release.yml` and the `pypi` environment.
+6. Sign the repo in to Codecov.
+   The `coverage` job uploads with OIDC, so it needs no token.
+7. Set Pages to deploy from GitHub Actions, and limit the `github-pages` environment to `v*` tags.
+8. Allow squash merges only, with the pull request title and description.
    Turn on auto-merge, head branch deletion, required SHA pinning, Dependabot alerts and security updates, and CodeQL default setup.
-7. After the first CI run, add the rulesets.
+9. After the first CI run, add the rulesets.
    The `main` ruleset requires a pull request with no approvals, squash merges, and the `all-green` and `title` checks.
    It blocks force pushes and deletion, and the admin can bypass it for pull requests only.
    The tag ruleset lets only the App and the admin create, update or delete `v*` tags.

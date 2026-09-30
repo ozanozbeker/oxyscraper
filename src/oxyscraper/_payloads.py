@@ -1,4 +1,4 @@
-"""`Payload` and `SOURCES`, which validate, serialize and redact one job's body and send nothing.
+"""`Payload`, `SOURCES` and the instruction types, which validate, serialize and redact one job's body and send nothing.
 
 `_sessions` builds the dry run from them.
 A model validator on a subclass runs outside `Payload`'s scrubbing wrap validator, so a subclass checks fields together in `model_post_init` instead.
@@ -7,19 +7,32 @@ A model validator on a subclass runs outside `Payload`'s scrubbing wrap validato
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Literal, NotRequired, Self
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Literal,
+    NotRequired,
+    Required,
+    Self,
+    TypeVar,
+)
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
+    Field,
+    PlainValidator,
     PositiveInt,
+    StrictInt,
     TypeAdapter,
     ValidationError,
     field_validator,
     model_serializer,
     model_validator,
 )
-from typing_extensions import TypedDict, override
+from typing_extensions import TypeAliasType, TypedDict, override
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -52,6 +65,226 @@ _UserAgentType = Literal[
     "desktop_opera",
     "desktop_safari",
 ]
+
+
+_T = TypeVar("_T")
+
+
+def _closed(typed_dict: type[_T]) -> type[_T]:
+    """Forbid each key that `typed_dict` does not declare, which pydantic otherwise drops."""
+    # `pydantic.with_config` does this from 2.7, and oxy's floor is 2.4.
+    typed_dict.__pydantic_config__ = ConfigDict(extra="forbid")
+    return typed_dict
+
+
+def _compiled(pattern: str) -> str:
+    """Raise for a regex that Python's `re` cannot compile, because the API bills it or returns 500."""
+    try:
+        re.compile(pattern)
+    except re.error as error:
+        msg = f"{pattern!r} is not a valid regex: {error}"
+        raise ValueError(msg) from None
+    return pattern
+
+
+_Regex = Annotated[str, AfterValidator(_compiled)]
+
+
+@_closed
+class _Selector(TypedDict):
+    type: Literal["xpath", "css", "text"]
+    value: str
+
+
+@_closed
+class _BrowserInstructionBase(TypedDict, total=False):
+    timeout_s: Annotated[int, Field(ge=1, le=60)]
+    wait_time_s: Annotated[int, Field(ge=0, le=60)]
+    on_error: Literal["error", "skip"]
+
+
+@_closed
+class _Click(_BrowserInstructionBase):
+    type: Required[Literal["click", "wait_for_element"]]
+    selector: Required[_Selector]
+
+
+@_closed
+class _Input(_BrowserInstructionBase):
+    type: Required[Literal["input"]]
+    selector: Required[_Selector]
+    value: Required[str]
+
+
+@_closed
+class _Scroll(_BrowserInstructionBase):
+    type: Required[Literal["scroll"]]
+    x: Required[int]
+    y: Required[int]
+
+
+@_closed
+class _Wait(_BrowserInstructionBase):
+    type: Required[Literal["scroll_to_bottom", "wait"]]
+
+
+@_closed
+class _FetchResource(_BrowserInstructionBase):
+    type: Required[Literal["fetch_resource"]]
+    filter: Required[_Regex]
+
+
+BrowserInstruction = Annotated[
+    _Click | _Input | _Scroll | _Wait | _FetchResource, Field(discriminator="type")
+]
+"""One item of `browser_instructions`, whose `type` names one of the 7 documented instructions.
+
+[JS Rendering & Browser Control](https://developers.oxylabs.io/products/web-scraper-api/features/js-rendering-and-browser-control) gives each instruction's keys.
+"""
+
+
+def _regex_search(args: list[str | int]) -> list[str | int]:
+    """Raise unless `args` holds a regex and, optionally, the number of the group to return."""
+    match args:
+        case [str(pattern)] | [str(pattern), int()]:
+            _compiled(pattern)
+            return args
+    msg = (
+        "regex_search takes a regex and, optionally, the number of the group to return"
+    )
+    raise ValueError(msg)
+
+
+def _regex_substring(args: list[str]) -> list[str]:
+    """Raise unless the first of `args` compiles, because the second is the replacement."""
+    _compiled(args[0])
+    return args
+
+
+@_closed
+class _NoArgs(TypedDict):
+    _fn: Literal[
+        "element_text",
+        "amount_from_string",
+        "amount_range_from_string",
+        "length",
+        "convert_to_float",
+        "convert_to_int",
+        "convert_to_str",
+        "max",
+        "min",
+        "product",
+    ]
+
+
+@_closed
+class _Expressions(TypedDict):
+    # `docs/research/live-universal.md` found that the API runs a bare string for these three only.
+    _fn: Literal["xpath", "xpath_one", "css"]
+    _args: Annotated[list[str], Field(min_length=1)] | str
+
+
+@_closed
+class _CssOne(TypedDict):
+    _fn: Literal["css_one"]
+    _args: Annotated[list[str], Field(min_length=1)]
+
+
+@_closed
+class _Join(TypedDict):
+    _fn: Literal["join"]
+    _args: NotRequired[str]
+
+
+@_closed
+class _RegexFindAll(TypedDict):
+    _fn: Literal["regex_find_all"]
+    _args: Annotated[list[_Regex], Field(min_length=1)]
+
+
+@_closed
+class _RegexSearch(TypedDict):
+    _fn: Literal["regex_search"]
+    _args: Annotated[list[str | StrictInt], AfterValidator(_regex_search)]
+
+
+@_closed
+class _RegexSubstring(TypedDict):
+    _fn: Literal["regex_substring"]
+    _args: Annotated[
+        list[str], Field(min_length=2, max_length=2), AfterValidator(_regex_substring)
+    ]
+
+
+@_closed
+class _SelectNth(TypedDict):
+    _fn: Literal["select_nth"]
+    _args: StrictInt
+
+
+@_closed
+class _Average(TypedDict):
+    _fn: Literal["average"]
+    _args: NotRequired[StrictInt]
+
+
+ParsingFunction = (
+    _NoArgs
+    | _Expressions
+    | _CssOne
+    | _Join
+    | _RegexFindAll
+    | _RegexSearch
+    | _RegexSubstring
+    | _SelectNth
+    | _Average
+)
+"""One item of a `_fns` pipeline, whose `_fn` names one of the 20 documented functions.
+
+[List of parsing functions](https://developers.oxylabs.io/products/web-scraper-api/features/custom-parser/writing-instructions-manually/list-of-functions) gives each function's `_args`.
+"""
+
+_OnError = Literal["suppress", "warn", "error"]
+
+ParsingInstructions = TypeAliasType(
+    "ParsingInstructions",
+    "dict[str, ParsingInstructions | list[ParsingFunction] | _OnError]",
+)
+"""One scope of parsing instructions, which holds a `_fns` pipeline, `_on_error`, and `_items` and fields that are scopes of their own.
+
+[Parsing instruction examples](https://developers.oxylabs.io/products/web-scraper-api/features/custom-parser/writing-instructions-manually/parsing-instruction-examples) shows each part.
+"""
+
+_PIPELINE = TypeAdapter(list[Annotated[ParsingFunction, Field(discriminator="_fn")]])
+_ON_ERROR = TypeAdapter(_OnError)
+_SCOPE = TypeAdapter(dict[str, Any])
+
+
+def _parsing_instructions(instructions: object) -> object:
+    """Check each scope of `instructions`, and return them as they are."""
+    # pydantic 2.4 passes `ValidationInfo` to a validator with a second parameter, so `_check_scope` takes `path` instead.
+    _check_scope(instructions, ())
+    return instructions
+
+
+def _check_scope(scope: object, path: tuple[str, ...]) -> None:
+    """Check the pipeline, `_on_error` and fields of the scope at `path`."""
+    # A union over a scope's values reports an error for every branch, so the key names the type to validate.
+    for key, value in _checked(_SCOPE, scope, path).items():
+        if key == "_fns":
+            _checked(_PIPELINE, value, (*path, key))
+        elif key == "_on_error":
+            _checked(_ON_ERROR, value, (*path, key))
+        else:
+            _check_scope(value, (*path, key))
+
+
+def _checked(adapter: TypeAdapter[_T], value: object, path: tuple[str, ...]) -> _T:
+    """Validate `value`, and raise with `path` before each error's location."""
+    try:
+        return adapter.validate_python(value)
+    except ValidationError as error:
+        raise _scrubbed(error, "python", path) from None
 
 
 class _ContextItem(TypedDict):
@@ -138,8 +371,10 @@ class Payload(BaseModel):
         `repr`, validation errors and `dry_run` show its credentials as `redacted:redacted`, as the API does.
     parsing_instructions
         The instructions of a custom parser, which need `parse`.
+        A wrong `_args` shape, or a regex that Python's `re` cannot compile, raises, because the API bills it with a null field.
     browser_instructions
         The browser actions to run on the page, which need `render`.
+        An instruction after `fetch_resource`, or a `filter` that Python's `re` cannot compile, raises, because the API returns 500 for it on every attempt.
     extra
         Keys in the API's shape, which oxy merges into the body.
         Its `context` items follow the typed ones, and a key set both here and as a field raises.
@@ -175,8 +410,10 @@ class Payload(BaseModel):
     context: list[_ContextItem] | None = None
     storage_type: Literal["gcs", "s3", "tos", "s3_compatible"] | None = None
     storage_url: str | None = None
-    parsing_instructions: dict[str, Any] | None = None
-    browser_instructions: list[dict[str, Any]] | None = None
+    parsing_instructions: (
+        Annotated[ParsingInstructions, PlainValidator(_parsing_instructions)] | None
+    ) = None
+    browser_instructions: list[BrowserInstruction] | None = None
     extra: dict[str, Any] = {}
 
     @field_validator("extra")
@@ -184,6 +421,16 @@ class Payload(BaseModel):
     def _extra_context(cls, extra: dict[str, Any]) -> dict[str, Any]:
         _EXTRA_CONTEXT.validate_python(extra)
         return extra
+
+    @field_validator("browser_instructions")
+    @classmethod
+    def _fetch_resource_last(
+        cls, instructions: list[BrowserInstruction] | None
+    ) -> list[BrowserInstruction] | None:
+        if any(item["type"] == "fetch_resource" for item in (instructions or ())[:-1]):
+            msg = "fetch_resource must be the last browser instruction, because the API returns 500 for any instruction after it"
+            raise ValueError(msg)
+        return instructions
 
     @model_validator(mode="wrap")
     @classmethod
@@ -288,14 +535,16 @@ def _scrub(value: object) -> object:
 
 
 def _scrubbed(
-    error: ValidationError, input_type: Literal["python", "json"]
+    error: ValidationError,
+    input_type: Literal["python", "json"],
+    path: tuple[str, ...] = (),
 ) -> ValidationError:
-    """Return `error` rebuilt with each input scrubbed."""
+    """Return `error` rebuilt with each input scrubbed and `path` before each location."""
     lines: list[InitErrorDetails] = []
     for line in error.errors():
         scrubbed: InitErrorDetails = {
             "type": line["type"],
-            "loc": line["loc"],
+            "loc": (*path, *line["loc"]),
             "input": _scrub(line["input"]),
         }
         if "ctx" in line:

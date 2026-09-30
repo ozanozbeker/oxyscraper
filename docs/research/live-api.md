@@ -36,6 +36,7 @@ It contradicts the docs on the 422 code, the Realtime response body, the content
   Each value of a batch and each page of a `pages: 2` job takes 1 from `-remaining`.
   A submission that returns 400 or 429 takes nothing.
   A batch larger than `-remaining` returns 429 for the whole batch and creates no job.
+  A job larger than a limit returns 429 every time, even in a fresh window.
 - **Submission codes.**
   Push-Pull submissions and batches return `202 Accepted`.
   Realtime returns `200 OK`, also for a faulted job.
@@ -50,6 +51,7 @@ It contradicts the docs on the 422 code, the Realtime response body, the content
   A page past the last one returned 200 with Amazon's "No results" page, so its job ended `done` and billed both pages.
   The content endpoint takes the page number itself, such as 20 and 21 for `start_page: 20`.
   For that job, pages 1, 2 and 3 returned 204.
+  `pages` stops at 20, or at 10 on `google_search` and `google_ads`, and a larger value returns a free 400.
 - **Realtime.**
   A Realtime response carries a `job` object and an `x-oxylabs-job-id` header.
   The docs' Realtime sample shows no `job` object.
@@ -140,6 +142,9 @@ In the Sandbox run, a submission sent at 20:07:20.04 still read 45, because its 
 | A submission that returns 400 | 0 | A fault job, three 400s and a fault job read 49 and 48, three times | Pacing |
 | A batch that returns 429 | 0 | The 429 read 49, and the next submission read 48 | Burst |
 | 10 status GETs | 0 | The `xhr` job right after them read 49 | XHR |
+| A `universal` job with `pages: 3`, whose job object reads `pages: 1` | 3 | The job read 47 in a fresh window | [2026-09-30](#a-job-larger-than-the-limit) |
+| A rendered job with `pages: 3` | 3 from each limit | The job read 10 of 13 and 47 of 50 in a fresh window | [2026-09-30](#a-job-larger-than-the-limit) |
+| A job with more pages than `-remaining` | 0 | Jobs with `pages` 20, 20, 20 and 10 read 30, 10, a 429 and 0 | [2026-09-30](#a-job-larger-than-the-limit) |
 
 ### Exceeding the limit
 
@@ -184,8 +189,72 @@ x-ratelimit-total-requests-00000000-0000-0000-0000-000000000000-remaining: 0
 {"message":"Too many requests. (Total Dynamic).","instance":"/v1/queries","timestamp":"2026-09-24T20:14:40.692756408Z","trace_id":"6ab584b0-89e71c2c26378abd3b6860ad"}
 ```
 
-The run did not exceed the rendered limit, so the body of that 429 is unknown.
+The run did not exceed the rendered limit.
+[A job larger than the limit](#a-job-larger-than-the-limit) shows that 429.
 No response named a domain, so the domain throttle never returned its 429 during the run ([Rate Limits][rate-limits]).
+
+### A job larger than the limit
+
+A probe on 2026-09-30, from 05:51 to 05:57 UTC, tested jobs whose `pages` exceed a limit, for [What does a live test show about a job whose `pages` exceed the rate limit?](https://github.com/ozanozbeker/oxyscraper/issues/54).
+It sent 73 submissions over HTTP/2 and billed no results.
+Its 14 accepted jobs used `universal`, and all of them ended `faulted`.
+The 5 unrendered ones fetched `https://httpbin.org/status/200`, whose empty body faults the job.
+The 9 rendered ones each fetched an unregistered `.com` name, and each faulted with 613.
+
+On the 9 sources that took `pages`, it stops at 20, or at 10 on `google_search` and `google_ads`.
+These checks run before the rate limit, so a larger value returns a free 400 with no rate-limit headers.
+They also run before the check for an empty input, so the probes of each source's largest value sent an empty `query`, `url` or `prompt`, and created no job.
+
+| Source | Largest `pages` | Above it |
+| --- | --- | --- |
+| `amazon_search`, `bing_search`, `google_maps`, `google_shopping_search`, `google_travel_hotels`, `chatgpt`, `universal` | 20 | ``Parameter `pages` should not exceed 20.`` |
+| `google_search`, `google_ads` | 10 | ``Parameter `pages` cannot exceed 10 for this source.`` up to 20, then the message above |
+| `walmart_search`, `youtube_search` | none | `[pages]: This field was not expected.`, for any value |
+
+`pages: 0` returned ``Parameter `pages` should be a positive integer.`` on every source but the last two.
+No page documents `pages` for `google_travel_hotels`, `chatgpt` or `universal`, and the probe did not test whether they fetch more than one page.
+
+[Rate Limits][rate-limits] gives each plan two limits: 10 jobs and 3 rendered jobs per second on the Free trial, 50 and 13 from Micro to Venture, and 100 and 25 on Business and Corporate.
+So one job can exceed the rendered limit on every plan below Business, and the total limit only on the Free trial.
+
+A job counts its `pages` against each limit, even where it fetches one page.
+`universal` sets `pages` to 1 in its job object, and each such job had one results entry.
+Still, a fault job with `pages: 3` read 47 of 50 in a fresh window, and a rendered one read 10 of 13 and 47 of 50.
+In one window, fault jobs with `pages` 20, 20, 20, 10 and 1 read 30, 10, a 429, 0 and a 429.
+So a job larger than `-remaining` returns 429 as a whole, as a batch does, and takes nothing.
+
+A job larger than a limit returned 429 every time.
+A rendered job with `pages: 14` does not fit Starter's rendered limit of 13, and it returned 429 in 6 of 6 fresh windows:
+
+- 3 rendered fault jobs, 3 seconds apart.
+- 1 rendered fault job after 60 seconds without a submission.
+- `amazon_search` for `usb c cable`, and `bing_search` for `coffee`, both with `render: html`.
+
+This is the `amazon_search` 429:
+
+```text
+HTTP/2 429
+date: Wed, 30 Sep 2026 05:55:22 GMT
+content-type: application/json
+content-length: 174
+x-oxylabs-client-id: 123456
+x-oxylabs-client-name: USERNAME
+x-oxyserps-client-id: 123456
+x-oxyserps-client-name: USERNAME
+x-ratelimit-total-render-requests-00000000-0000-0000-0000-000000000000-limit: 13
+x-ratelimit-total-render-requests-00000000-0000-0000-0000-000000000000-remaining: 13
+x-ratelimit-total-requests-00000000-0000-0000-0000-000000000000-limit: 50
+x-ratelimit-total-requests-00000000-0000-0000-0000-000000000000-remaining: 50
+
+{"message":"Too many requests. (Total Render Dynamic).","instance":"/v1/queries","timestamp":"2026-09-30T05:55:22.357461089Z","trace_id":"6abca44a-6e29f0b757d82da81fcd975e"}
+```
+
+Each of the six 429s read both limits in full, so it took nothing.
+In each window, a rendered fault job sent right after it was accepted, and read 12 of 13 and 49 of 50.
+A rendered fault job with `pages: 13` was accepted and read 0 of 13, and the next rendered job returned 429.
+So the API accepts a job only when its pages fit the `-remaining` of every limit it counts against.
+Neither a fresh window nor a minute without submissions lets a larger job through.
+The 429 carries each limit's `-limit` header, so a client can see that the job's pages exceed it.
 
 ### Status and results requests
 
@@ -1327,8 +1396,6 @@ Fetching the jobs from 2026-09-28 again at 24, 48 and 72 hours after they finish
 - Do API users under one account share a limit, and when does the domain throttle return its 429?
   No 429 in the run named a domain, even after 177 jobs failed on distinct names.
   [Support answers](job-lifecycle.md#support-answers) records what Oxylabs support said about both.
-- What does a 429 on the rendered limit return, and do forced rendering and LLM sources count as rendered?
-  Exceeding it takes 14 rendered submissions in one window, and each of them could bill, so the run did not try.
 - When does 612 appear instead of 613?
 - Can any endpoint return a Realtime job after its response?
   The status and results endpoints cannot, and a job past the TTL returns no ID at all.

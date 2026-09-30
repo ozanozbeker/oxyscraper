@@ -4,6 +4,7 @@ This file lists errors and gaps in the Oxylabs docs that live tests found, to re
 GitBook exports the docs to `oxylabs/gitbook-public-english`, which is private, so the docs have no public issue tracker.
 Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the parameter and retention entries, and links the test behind it.
 The two entries on storage endpoints, the entry on a 400's `errors` list, the entries from the `universal` and Amazon runs and the entry on LLM sources through Realtime cite the pages as published on 2026-09-29.
+The entries on `pages` limits and on a job larger than a rate limit cite the pages as published on 2026-09-30.
 
 ## Statements the API contradicts
 
@@ -276,7 +277,8 @@ The two entries on storage endpoints, the entry on a 400's `errors` list, the en
 - **Docs:** [Rate Limits][rate-limits] counts job submissions per second, and does not say how a batch or a job with `pages` above 1 counts.
 - **API:** each batch value and each page of a `pages: 2` job took 1 from `-remaining`.
   A batch larger than `-remaining` returned 429 for the whole batch and created no job.
-- **Evidence:** [What counts against the limit](docs/research/live-api.md#what-counts-against-the-limit) and [Exceeding the limit](docs/research/live-api.md#exceeding-the-limit).
+  A job's pages also count against the rendered limit, and they count even where the job fetches one page: a `universal` job with `pages: 3` took 3, although its job object read `pages: 1`.
+- **Evidence:** [What counts against the limit](docs/research/live-api.md#what-counts-against-the-limit), [Exceeding the limit](docs/research/live-api.md#exceeding-the-limit) and [A job larger than the limit](docs/research/live-api.md#a-job-larger-than-the-limit).
 
 ### Rate Limits: the header names carry a UUID, and no header gives a reset time
 
@@ -381,6 +383,13 @@ The two entries on storage endpoints, the entry on a 400's `errors` list, the en
 - **API:** a batch of 14 rendered values returned 429 with `"message": "Too many requests. (Total Render Dynamic)."`, and created no job.
   A batch of 13 took 13 from the rendered limit.
 - **Evidence:** [Rendered batches](docs/research/live-parameters.md#rendered-batches).
+
+### Rate Limits: a job larger than a limit returns 429 every time
+
+- **Docs:** [Rate Limits][rate-limits] gives each plan's limits, and does not say what a job whose pages exceed one returns.
+- **API:** a rendered job with `pages: 14`, against Starter's rendered limit of 13, returned 429 with `"message": "Too many requests. (Total Render Dynamic)."` in 6 of 6 fresh windows, on `universal`, `amazon_search` and `bing_search`.
+  It took nothing from either limit, and a rendered job with `pages: 13` was accepted.
+- **Evidence:** [A job larger than the limit](docs/research/live-api.md#a-job-larger-than-the-limit).
 
 ### E-Commerce Localization: an Amazon postal code that does not exist faults the job
 
@@ -542,6 +551,13 @@ The two entries on storage endpoints, the entry on a 400's `errors` list, the en
   On `amazon_product`, `amazon_sellers` and `amazon`, `pages: 2` became 1, and `start_page: 2` billed the first page labelled as page 2.
 - **Evidence:** [Free checks](docs/research/live-amazon.md#free-checks), [Top-level parameters](docs/research/live-amazon.md#top-level-parameters) and [Input and page rules](docs/research/live-amazon.md#input-and-page-rules).
 
+### Google and Bing: the docs give no page limits
+
+- **Docs:** [Google Search][g-search], [Google Ads][g-ads], [Local Search][g-local], [Shopping Search][g-shopping-search] and [Bing Search][bing-search] describe `pages` as "Number of pages to retrieve.", without a limit.
+- **API:** `pages` above 20 returned ``Parameter `pages` should not exceed 20.`` on all five, and on `universal`, `google_travel_hotels` and `chatgpt`, whose pages do not document it.
+  `google_search` returned ``Parameter `pages` cannot exceed 10 for this source.`` for 11 and for 20, and `google_ads` for 20.
+- **Evidence:** [A job larger than the limit](docs/research/live-api.md#a-job-larger-than-the-limit).
+
 ### Amazon: the page types that `amazon` parses are not listed
 
 - **Docs:** the [Amazon][amazon] overview limits parsing on `amazon` to "URLs of specific Amazon page types", and links [Domain and Locale][domain-locale], which lists no page types.
@@ -619,3 +635,8 @@ The two entries on storage endpoints, the entry on a 400's `errors` list, the en
 [currency-search]: https://files.gitbook.com/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FzrXw45naRpCZ0Ku9AjY1%2Fuploads%2FIAHLazcDOwZSiZ6s8IJt%2FAmazon_search_currency_values.json?alt=media
 [currency-new]: https://files.gitbook.com/v0/b/gitbook-x-prod.appspot.com/o/spaces%2FzrXw45naRpCZ0Ku9AjY1%2Fuploads%2FNNybEQaVnTrc9ymR1NGE%2Fcurrency_new.json?alt=media
 [g-ai-mode]: https://developers.oxylabs.io/api-targets/search-engines/google/ai-mode
+[g-search]: https://developers.oxylabs.io/api-targets/search-engines/google/search/search
+[g-ads]: https://developers.oxylabs.io/api-targets/search-engines/google/ads
+[g-local]: https://developers.oxylabs.io/api-targets/search-engines/google/search/local-search
+[g-shopping-search]: https://developers.oxylabs.io/api-targets/search-engines/google/shopping/shopping-search
+[bing-search]: https://developers.oxylabs.io/api-targets/search-engines/bing/search

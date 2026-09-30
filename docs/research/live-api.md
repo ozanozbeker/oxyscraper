@@ -31,7 +31,8 @@ It contradicts the docs on the 422 code, the Realtime response body, the content
   Every accepted submission returns `x-ratelimit-total-requests-<uuid>-limit` and `-remaining`.
   A rendered one adds `x-ratelimit-total-render-requests-<uuid>-limit` and `-remaining`.
   No response carries `Retry-After` or a reset header, including a 429.
-  Status and results GETs carry no rate-limit headers, and 110 of them in 10 seconds returned no 429.
+  Status and results GETs carry no rate-limit headers.
+  In [Checks at a run's rate](#checks-at-a-runs-rate), 34,250 of them at up to 659 a second returned no 429.
 - **Counting.**
   Each value of a batch and each page of a `pages: 2` job takes 1 from `-remaining`.
   A submission that returns 400 or 429 takes nothing.
@@ -145,6 +146,7 @@ In the Sandbox run, a submission sent at 20:07:20.04 still read 45, because its 
 | A `universal` job with `pages: 3`, whose job object reads `pages: 1` | 3 | The job read 47 in a fresh window | [2026-09-30](#a-job-larger-than-the-limit) |
 | A rendered job with `pages: 3` | 3 from each limit | The job read 10 of 13 and 47 of 50 in a fresh window | [2026-09-30](#a-job-larger-than-the-limit) |
 | A job with more pages than `-remaining` | 0 | Jobs with `pages` 20, 20, 20 and 10 read 30, 10, a 429 and 0 | [2026-09-30](#a-job-larger-than-the-limit) |
+| Checks at 30 to 120 a second | 0 | Batches of 30 sent during them each read 20 | [2026-09-30](#checks-at-a-runs-rate) |
 
 ### Exceeding the limit
 
@@ -263,6 +265,44 @@ Every status GET returned 200, and the results GETs returned 204 twice and then 
 None returned 429, and none carried a rate-limit header.
 None of the run's 696 GETs on the status, results and content endpoints carried one, and neither did any read of `/v2/stats`.
 In the XHR run, a submission right after 10 status GETs read 49, so GETs do not count against the submission limit.
+
+### Checks at a run's rate
+
+A probe on 2026-09-30, from 16:24 to 16:27 UTC, checked jobs at the rate of a large run, for [What does a live test show about checking jobs at a run's rate?](https://github.com/ozanozbeker/oxyscraper/issues/59).
+It sent 5 batches and 34,250 GETs over HTTP/2, with at most 100 requests in flight.
+It billed 1 result.
+No GET returned 429 or an error, and none carried a rate-limit header or `Retry-After`.
+
+The batches held 30 fault jobs each and went out 10 seconds apart.
+The probe checked each job every second, from 1 second after the API accepted its batch.
+It kept checking a job after the job finished, because a GET bills nothing.
+It checked one job in 5 on the status endpoint, and the rest on `/results`.
+Last, 100 workers checked the same jobs back to back for 30 seconds.
+So 100 requests stayed in flight, the most that oxy sends to one host.
+
+| Step | Time (UTC) | GETs | GETs a second | Median latency | 95th percentile |
+| --- | --- | --- | --- | --- | --- |
+| Ramp, while the batches went out | 16:24:52 to 16:25:32 | 3,120 | 30, rising to 120 | 0.19 s | 0.29 s |
+| Hold, each job every second | 16:25:32 to 16:27:02 | 13,500 | 150 in each of 90 seconds | 0.18 s | 0.31 s |
+| Ceiling, 100 in flight | 16:27:02 to 16:27:32 | 17,480 | 591 at the median, 659 at most | 0.16 s | 0.23 s |
+
+Latency did not rise with the rate, and the ceiling's median was the lowest of the three.
+From this machine, 100 requests in flight carried about 600 checks a second.
+That is 4 times the rate of a run with 150 pending jobs.
+So the probe's highest rate came from oxy's limit of 100 requests at once, not from the API.
+
+Checks take nothing from the submission limit.
+Each batch read `-remaining: 20` of 50, including the four sent while checks ran at 30 to 120 a second.
+
+The jobs of one batch share their check times, so their checks go out together.
+In the hold, those bursts overlapped and reached 100 in flight.
+A check waited at most 0.07 seconds for a free slot.
+
+Of the 150 jobs, 149 ended `faulted` 6 to 50 seconds after creation.
+The median was 13 seconds.
+So most checks found a finished job, and `/results` returned 204 for only 1,619 of the 34,100 checks.
+One job ended `done` after 14 seconds and billed.
+Its result held a 5,790-byte page from a network device's web interface, as in [Fault jobs](#fault-jobs).
 
 ## Submission and batch
 
@@ -1357,6 +1397,7 @@ The page came from a `lighttpd` server and redirects to `/cgi-bin/`.
 It looks like a router's web interface, which suggests that a resolver on the exit node's network returned an address for the name.
 Usage Statistics counted all three as results.
 So about one fault job in 60 billed.
+In [Checks at a run's rate](#checks-at-a-runs-rate), 1 of 150 more such jobs ended `done` with another device's web interface.
 A test that needs free jobs cannot rely on a host that does not resolve.
 
 ## Open questions

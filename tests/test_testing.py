@@ -1,5 +1,7 @@
 import base64
 import math
+import re
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -112,6 +114,77 @@ async def test_job_object_keeps_known_keys(fake: FakeOxylabs) -> None:
     assert "foo_bar" not in job
     assert context["http_method"] == "post"
     assert "foo_bar" not in context
+
+
+async def test_every_source(fake: FakeOxylabs) -> None:
+    """The fake takes each of the 123 documented sources, and returns its own job object."""
+    catalog = Path(__file__).parents[1] / "docs/research/parameter-catalog.md"
+    keys = "|".join(testing._INPUT_KEYS)
+    rows = re.findall(
+        rf"^\| (?:[^|`]+\| )?`(\w+)` \| `({keys})` \|",
+        catalog.read_text(),
+        re.MULTILINE,
+    )
+    sources = dict(rows)
+
+    def value(key: str) -> str:
+        return f"{SANDBOX}/" if key == "url" else "x"
+
+    fake = FakeOxylabs(limit=len(sources))
+    async with client(fake) as http:
+        jobs = [
+            (await http.post(DATA, json={"source": source, key: value(key)})).json()
+            for source, key in sources.items()
+        ]
+    assert len(sources) == 123
+    assert [job["source"] for job in jobs] == list(sources)
+    assert sorted(len(job) for job in jobs) == [7] * 100 + [34] * 23
+
+
+async def test_short_job_object(fake: FakeOxylabs) -> None:
+    """Most sources return the payload, sorted by key, and the job's own fields."""
+    payload = {
+        "source": "walmart_product",
+        "product_id": "11601059297",
+        "parse": True,
+        "user_agent_type": "mobile",
+        "domain": "com",
+    }
+    async with client(fake) as http:
+        job = (await http.post(DATA, json=payload)).json()
+    assert job == {key: payload[key] for key in sorted(payload)} | {
+        "id": "7500000000000000001",
+        "status": "pending",
+        "created_at": "2026-01-01 00:00:00",
+        "updated_at": "2026-01-01 00:00:00",
+        "_links": job["_links"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("payload", "key", "value"),
+    [
+        (
+            {"source": "google_trends_explore", "query": "x"},
+            "search_type",
+            "web_search",
+        ),
+        ({"source": "google_maps", "query": "x"}, "hotel_occupancy", 2),
+        (
+            {"source": "youtube_metadata", "query": "x", "parse": True},
+            "successful_parse_status_codes",
+            [],
+        ),
+    ],
+)
+async def test_context_defaults(
+    fake: FakeOxylabs, payload: dict[str, Any], key: str, value: object
+) -> None:
+    """A full job object lists its source's `context` keys, and `parse: true` adds one."""
+    async with client(fake) as http:
+        job = (await http.post(DATA, json=payload)).json()
+    context = {item["key"]: item["value"] for item in job["context"]}
+    assert context[key] == value
 
 
 async def test_batch(fake: FakeOxylabs) -> None:

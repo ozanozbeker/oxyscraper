@@ -4,7 +4,7 @@ This file lists errors and gaps in the Oxylabs docs that live tests found, to re
 GitBook exports the docs to `oxylabs/gitbook-public-english`, which is private, so the docs have no public issue tracker.
 Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the parameter and retention entries, and links the test behind it.
 The two entries on storage endpoints, the entry on a 400's `errors` list, the entries from the `universal` and Amazon runs and the entry on LLM sources through Realtime cite the pages as published on 2026-09-29.
-The entries on `pages` limits and on a job larger than a rate limit cite the pages as published on 2026-09-30.
+The entries on `pages` limits, on a job larger than a rate limit and from the job object run cite the pages as published on 2026-09-30.
 
 ## Statements the API contradicts
 
@@ -234,6 +234,22 @@ The entries on `pages` limits and on a job larger than a rate limit cite the pag
 - **API:** `min_price: -100` returned 400 with ``Parameter `context:min_price` must be a positive integer.``
   `min_price: 0` returned 202 and billed, and the URL carried no price filter.
 - **Evidence:** [Free checks](docs/research/live-amazon.md#free-checks) and [Sorting and filters](docs/research/live-amazon.md#sorting-and-filters).
+
+### Google Ads, Local Search and Shopping Search: the job object leaves out documented `context` keys
+
+- **Docs:** [Google Ads][g-ads] documents `context:udm`, `context:tbm`, `context:tbs` and `context:nfpr`, and [Local Search][g-local] and [Shopping Search][g-shopping-search] document `context:nfpr`.
+- **API:** the job objects of `google_ads`, `google_maps` and `google_shopping_search` list none of those keys.
+  A `google_ads` job that sent `udm`, `tbs` and `nfpr`, and a job on each of the other two that sent `nfpr`, kept none of them, as the API does for an unknown key.
+  All three jobs faulted, so the run could not see whether the keys took effect.
+- **Evidence:** [Keys the job object leaves out](docs/research/live-job-objects.md#keys-the-job-object-leaves-out).
+
+### JS Rendering: the file of forced domains does not match the jobs
+
+- **Docs:** [JS Rendering & Browser Control][js] links a file of the domains whose pages Oxylabs renders by force.
+  It gives `all` for Bed Bath & Beyond, eBay, Menards, Mercado Libre, Target and TikTok, `products` for Costco, and `product` for Lowe's.
+- **API:** `bedbathandbeyond`, `bedbathandbeyond_product`, `costco_product`, `ebay_product`, `menards`, `mercadolibre`, `mercadolibre_product`, `target_category`, `target_search` and the three TikTok sources ended `done` with `is_render_forced: false`.
+  `lowes_search` ran with `is_render_forced: true`, and Usage Statistics counted it as rendered.
+- **Evidence:** [Forced rendering](docs/research/live-job-objects.md#forced-rendering).
 
 ## Behaviour the docs leave out
 
@@ -601,6 +617,30 @@ The entries on `pages` limits and on a job larger than a rate limit cite the pag
   The response carried no job ID, no `x-oxylabs-*` headers and no rate-limit headers.
 - **Evidence:** [Probes on 2026-09-29](docs/research/live-api.md#probes-on-2026-09-29).
 
+### Push-Pull: 100 sources return a job object of the payload alone
+
+- **Docs:** [Push-Pull][push-pull] shows a job object that lists every parameter with its default, and does not say that the shape differs by source.
+- **API:** 100 of the 123 sources returned the payload's keys, sorted by name, then `id`, `status`, `created_at`, `updated_at` and `_links`, and no default.
+  Only `universal`, the Amazon, Google and Bing sources, and `youtube_download`, `youtube_metadata` and `youtube_subtitles` returned the object of 34 fields.
+- **Evidence:** [The short job object](docs/research/live-job-objects.md#the-short-job-object).
+
+### Google, Bing and YouTube: the sources take `context` keys that no page names
+
+- **Docs:** the source pages name none of `adstest`, `disable_scripts`, `keywords`, `audio_format` and `video_format`.
+  They name `expand_aio` and `safe_search` for Google search, and `hotel_occupancy` for Local Search with no default.
+- **API:** every job object of 34 fields lists `force_headers`, `force_cookies`, `hc_policy`, `parse_json_schema` and `parse_json_prompt`.
+  `google_ads` lists `disable_scripts`, `expand_aio` and `adstest`, `google_lens` lists `keywords`, and `youtube_download` lists `audio_format` and `video_format`.
+  `bing_search` lists `safe_search`, and `google_maps` and `google_travel_hotels` list `hotel_occupancy` with the value 2.
+- **Evidence:** [Context keys](docs/research/live-job-objects.md#context-keys).
+
+### The docs dropped the pages of 35 sources that the API still runs
+
+- **Docs:** on 2026-09-24 each of the 123 sources had its own page.
+  On 2026-09-30 no source page in the [llms.txt index][llms] names 35 of them: the URL source of every target but Google and Bing, and `airbnb_product`, `avnet_search`, `magazineluiza_product`, `staples_search` and `tokopedia_search`.
+  Their old pages return "Page Not Found" with status 200.
+- **API:** all 35 took a Push-Pull job on 2026-09-30.
+- **Evidence:** [Docs changes since the catalog](docs/research/live-job-objects.md#docs-changes-since-the-catalog).
+
 [response-codes]: https://developers.oxylabs.io/products/web-scraper-api/response-codes
 [help-response-codes]: https://developers.oxylabs.io/help-center/troubleshooting/response-codes-for-web-scraper-api
 [job-id]: https://developers.oxylabs.io/help-center/troubleshooting/where-can-i-find-my-scraping-job-id
@@ -640,3 +680,4 @@ The entries on `pages` limits and on a job larger than a rate limit cite the pag
 [g-local]: https://developers.oxylabs.io/api-targets/search-engines/google/search/local-search
 [g-shopping-search]: https://developers.oxylabs.io/api-targets/search-engines/google/shopping/shopping-search
 [bing-search]: https://developers.oxylabs.io/api-targets/search-engines/bing/search
+[llms]: https://developers.oxylabs.io/llms.txt

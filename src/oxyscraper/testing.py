@@ -56,40 +56,6 @@ _URL_SOURCES = frozenset({"amazon", "bing", "google", "universal"})
 _MAX_PAGES = 20
 _PAGE_LIMITS = {"google_ads": 10, "google_search": 10}
 _LLM_SOURCES = frozenset({"chatgpt", "gemini", "perplexity"})
-# The 26 sources that took a batch on 2026-09-28 (docs/research/live-parameters.md).
-_BATCH_SOURCES = _LLM_SOURCES | {
-    "amazon",
-    "amazon_bestsellers",
-    "amazon_pricing",
-    "amazon_product",
-    "amazon_search",
-    "amazon_sellers",
-    "bing",
-    "bing_search",
-    "google",
-    "google_ads",
-    "google_ai_mode",
-    "google_lens",
-    "google_maps",
-    "google_scholar",
-    "google_search",
-    "google_shopping_product",
-    "google_shopping_search",
-    "google_travel_hotels",
-    "google_trends_explore",
-    "universal",
-    "youtube_download",
-    "youtube_metadata",
-    "youtube_subtitles",
-}
-# #62 adds the other documented sources, with their job objects.
-_SOURCES = _BATCH_SOURCES | {
-    "ebay_search",
-    "target_product",
-    "walmart_product",
-    "walmart_search",
-    "youtube_search",
-}
 _LIMIT_MESSAGES: dict[_Limit, str] = {
     "total-requests": "Too many requests. (Total Dynamic).",
     "total-render-requests": "Too many requests. (Total Render Dynamic).",
@@ -124,7 +90,95 @@ _FIRST_FIVE: dict[str, Any] = {
     "parse_json_schema": None,
     "parse_json_prompt": None,
 }
+# The sources with a full job object, and the `context` keys and defaults that each lists.
+# Every other source returns a job object of the payload alone (docs/research/live-job-objects.md).
 _CONTEXT: dict[str, dict[str, Any]] = {
+    "amazon": _FIRST_FIVE
+    | {
+        "check_empty_geo": None,
+        "safe_search": True,
+        "cookies": [],
+        "headers": [],
+        "currency": None,
+    },
+    "amazon_bestsellers": _FIRST_FIVE
+    | {
+        "category_id": None,
+        "check_empty_geo": None,
+        "safe_search": True,
+        "currency": None,
+    },
+    "amazon_pricing": _FIRST_FIVE
+    | {
+        "condition": None,
+        "check_empty_geo": None,
+        "safe_search": True,
+        "currency": None,
+    },
+    "amazon_product": _FIRST_FIVE
+    | {
+        "autoselect_variant": False,
+        "check_empty_geo": None,
+        "safe_search": True,
+        "currency": None,
+    },
+    "amazon_search": _FIRST_FIVE
+    | {
+        "category_id": None,
+        "merchant_id": None,
+        "check_empty_geo": None,
+        "safe_search": True,
+        "currency": None,
+        "sort_by": None,
+        "refinements": None,
+        "min_price": None,
+        "max_price": None,
+    },
+    "amazon_sellers": _FIRST_FIVE
+    | {"check_empty_geo": None, "safe_search": True, "currency": None},
+    "bing": _FIRST_FIVE,
+    "bing_search": _FIRST_FIVE | {"safe_search": None},
+    "google": _FIRST_FIVE,
+    "google_ads": _FIRST_FIVE
+    | {"disable_scripts": False, "expand_aio": False, "adstest": False},
+    "google_ai_mode": _FIRST_FIVE,
+    "google_lens": _FIRST_FIVE | {"keywords": None},
+    "google_maps": _FIRST_FIVE | {"hotel_occupancy": 2, "hotel_dates": None},
+    "google_scholar": _FIRST_FIVE,
+    "google_search": _FIRST_FIVE
+    | {
+        "results_language": None,
+        "safe_search": None,
+        "tbm": None,
+        "cr": None,
+        "filter": None,
+        "nfpr": None,
+        "tbs": None,
+        "fpstate": None,
+        "aomd": None,
+        "udm": None,
+        "limit_per_page": [],
+        "disable_scripts": False,
+        "expand_aio": False,
+    },
+    "google_shopping_product": _FIRST_FIVE,
+    "google_shopping_search": _FIRST_FIVE
+    | {"sort_by": None, "min_price": None, "max_price": None, "tbs": None},
+    "google_travel_hotels": _FIRST_FIVE
+    | {
+        "hotel_occupancy": 2,
+        "hotel_dates": None,
+        "hotel_classes": [],
+        "adults": None,
+        "children": None,
+    },
+    "google_trends_explore": _FIRST_FIVE
+    | {
+        "search_type": "web_search",
+        "date_from": None,
+        "date_to": None,
+        "category_id": None,
+    },
     "universal": _FIRST_FIVE
     | {
         "successful_status_codes": [],
@@ -139,14 +193,124 @@ _CONTEXT: dict[str, dict[str, Any]] = {
         "delivery_location": None,
         "fulfillment_type": None,
     },
-    "amazon_product": _FIRST_FIVE
+    "youtube_download": _FIRST_FIVE
     | {
-        "autoselect_variant": False,
-        "check_empty_geo": None,
-        "safe_search": True,
-        "currency": None,
+        "download_type": "audio_video",
+        "video_quality": "720",
+        "audio_format": None,
+        "audio_language": None,
+        "video_format": None,
+        "start_at": None,
+        "end_at": None,
     },
+    "youtube_metadata": _FIRST_FIVE,
+    "youtube_subtitles": _FIRST_FIVE | {"language_code": None, "subtitle_origin": None},
 }
+# The 123 sources that the docs listed on 2026-09-24 (docs/research/parameter-catalog.md).
+_SOURCES = frozenset(_CONTEXT) | {
+    "airbnb",
+    "airbnb_product",
+    "alibaba",
+    "alibaba_product",
+    "alibaba_search",
+    "aliexpress",
+    "aliexpress_product",
+    "aliexpress_search",
+    "allegro_product",
+    "allegro_search",
+    "avnet_search",
+    "bedbathandbeyond",
+    "bedbathandbeyond_product",
+    "bedbathandbeyond_search",
+    "bestbuy_product",
+    "bestbuy_search",
+    "bodegaaurrera",
+    "bodegaaurrera_product",
+    "bodegaaurrera_search",
+    "cdiscount",
+    "cdiscount_product",
+    "cdiscount_search",
+    "chatgpt",
+    "costco",
+    "costco_product",
+    "costco_search",
+    "dcard_search",
+    "ebay",
+    "ebay_product",
+    "ebay_search",
+    "etsy",
+    "etsy_product",
+    "etsy_search",
+    "falabella",
+    "falabella_product",
+    "falabella_search",
+    "flipkart",
+    "flipkart_product",
+    "flipkart_search",
+    "gemini",
+    "grainger",
+    "grainger_product",
+    "grainger_search",
+    "idealo_search",
+    "indiamart",
+    "indiamart_product",
+    "indiamart_search",
+    "instacart",
+    "instacart_product",
+    "instacart_search",
+    "kroger",
+    "kroger_product",
+    "kroger_search",
+    "lazada",
+    "lazada_product",
+    "lazada_search",
+    "lowes",
+    "lowes_product",
+    "lowes_search",
+    "magazineluiza",
+    "magazineluiza_product",
+    "magazineluiza_search",
+    "mediamarkt",
+    "mediamarkt_product",
+    "mediamarkt_search",
+    "menards",
+    "menards_product",
+    "menards_search",
+    "mercadolibre",
+    "mercadolibre_product",
+    "mercadolibre_search",
+    "mercadolivre_product",
+    "mercadolivre_search",
+    "perplexity",
+    "petco",
+    "petco_search",
+    "publix",
+    "publix_product",
+    "publix_search",
+    "rakuten",
+    "rakuten_search",
+    "staples_search",
+    "target",
+    "target_category",
+    "target_product",
+    "target_search",
+    "tiktok",
+    "tiktok_shop_product",
+    "tiktok_shop_search",
+    "tokopedia",
+    "tokopedia_search",
+    "walmart",
+    "walmart_product",
+    "walmart_search",
+    "youtube_autocomplete",
+    "youtube_channel",
+    "youtube_search",
+    "youtube_search_max",
+    "youtube_video_trainability",
+    "zillow",
+}
+# The 26 sources that took a batch on 2026-09-28 are the LLM sources and those with a full job object (docs/research/live-parameters.md).
+_BATCH_SOURCES = _LLM_SOURCES | frozenset(_CONTEXT)
 # A 1x1 PNG, so an image library opens the default `png` content.
 _PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAAABJRU5ErkJggg=="
 # The API returned this page with a 500, so every 5xx returns it.
@@ -576,15 +740,59 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
     def _object(self, job: _Job, status: _Status) -> dict[str, Any]:
         """Return the job object as the API returns it while the job has `status`."""
         payload = job.payload
+        created = self._stamp(job.created)
+        # A Realtime job object keeps `updated_at` equal to `created_at`.
+        finished = status != "pending" and not job.realtime
+        updated = self._stamp(job.finished) if finished else created
+        if payload["source"] in _CONTEXT:
+            obj = self._parameters(job, status, created, updated)
+        else:
+            obj = {key: payload[key] for key in sorted(payload)} | {
+                "id": job.id,
+                "status": status,
+                "created_at": created,
+                "updated_at": updated,
+            }
+        if not job.realtime:
+            base = f"http://data.oxylabs.io/v1/queries/{job.id}"
+            first = obj.get("start_page", 1)
+            pages = [
+                f"{base}/results/{page}/content"
+                for page in range(first, first + obj.get("pages", 1))
+            ]
+            obj["_links"] = [
+                {"rel": "self", "href": base, "method": "GET"},
+                {"rel": "results", "href": f"{base}/results", "method": "GET"},
+                {"rel": "results-content", "href_list": pages, "method": "GET"},
+                {
+                    "rel": "results-html",
+                    "href": f"{base}/results?type=raw",
+                    "method": "GET",
+                },
+                {
+                    "rel": "results-content-html",
+                    "href_list": [f"{page}?type=raw" for page in pages],
+                    "method": "GET",
+                },
+            ]
+        return obj
+
+    def _parameters(
+        self, job: _Job, status: _Status, created: str, updated: str
+    ) -> dict[str, Any]:
+        """Return the fields of a job object that lists every parameter."""
+        payload = job.payload
         url = payload.get("url")
         host = httpx2.URL(url).host if isinstance(url, str) else ""
-        context = _CONTEXT.get(payload["source"], _FIRST_FIVE)
+        context = _CONTEXT[payload["source"]]
+        # The Amazon sources and `youtube_metadata` add this key for `parse: true`.
+        if payload.get("parse") is True:
+            context = context | {"successful_parse_status_codes": []}
         sent = {
             item["key"]: item.get("value")
             for item in payload.get("context", [])
             if isinstance(item, dict) and "key" in item
         }
-        finished = status != "pending"
         obj: dict[str, Any] = {
             "callback_url": None,
             "client_id": int(_CLIENT_ID),
@@ -593,12 +801,13 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
                 {"key": key, "value": sent.get(key, value)}
                 for key, value in context.items()
             ],
-            "created_at": self._stamp(job.created),
+            "created_at": created,
             "domain": host.rsplit(".", 1)[-1] if host else "com",
             "geo_location": None,
             "id": job.id,
             "limit": 10,
-            "locale": None,
+            # A `google` job for a URL without `hl` read "".
+            "locale": "" if payload["source"] == "google" else None,
             "pages": 1,
             "parse": False,
             "parser_type": None,
@@ -618,10 +827,7 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
             "aggregate_name": None,
             "subdomain": host.split(".")[0] if host.count(".") > 1 else "www",
             "content_encoding": "utf-8",
-            # A Realtime job object keeps `updated_at` equal to `created_at`.
-            "updated_at": self._stamp(
-                job.finished if finished and not job.realtime else job.created
-            ),
+            "updated_at": updated,
             "user_agent_type": "desktop",
             "session_info": None,
             "statuses": [],
@@ -638,35 +844,13 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
         uploaded = job.finished + job.outcome.upload_after
         if (
             job.storage_url
-            and finished
+            and status != "pending"
             and code is not None
             and self._now() >= uploaded
         ):
             message = _UPLOAD_MESSAGES.get(code, "")
             obj["statuses"] = [
                 {"event": "GCS_STORAGE_UPLOAD", "code": code, "message": message}
-            ]
-        if not job.realtime:
-            base = f"http://data.oxylabs.io/v1/queries/{job.id}"
-            first = obj["start_page"]
-            pages = [
-                f"{base}/results/{page}/content"
-                for page in range(first, first + obj["pages"])
-            ]
-            obj["_links"] = [
-                {"rel": "self", "href": base, "method": "GET"},
-                {"rel": "results", "href": f"{base}/results", "method": "GET"},
-                {"rel": "results-content", "href_list": pages, "method": "GET"},
-                {
-                    "rel": "results-html",
-                    "href": f"{base}/results?type=raw",
-                    "method": "GET",
-                },
-                {
-                    "rel": "results-content-html",
-                    "href_list": [f"{page}?type=raw" for page in pages],
-                    "method": "GET",
-                },
             ]
         return obj
 
@@ -892,6 +1076,7 @@ def _resolve(storage_url: str, job_id: str, payload: dict[str, Any]) -> str:
     """Resolve a `storage_url` as the API does at submission, and redact its credentials."""
     name = storage_url
     # A name that does not end in `.{{ extension }}` names a folder.
+    # `youtube_download` names its object `<query>_<job id>.{{ extension }}` instead, which the fake leaves out.
     if not name.endswith(".{{ extension }}"):
         name = name.rstrip("/") + "/{{ job_id }}.{{ extension }}"
     variables = {

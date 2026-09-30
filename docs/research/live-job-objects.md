@@ -2,7 +2,7 @@
 
 This note records the job object that each documented source returns, for the fake in `oxyscraper.testing`.
 It answers [Record each source's job object for the fake](https://github.com/ozanozbeker/oxyscraper/issues/62).
-The run took place on 2026-09-30, from 21:49 to 22:06 UTC, on the account with the Starter plan.
+The run took place on 2026-09-30, from 21:49 to 22:10 UTC, on the account with the Starter plan.
 It spent 96 results, 26 of them rendered, and Usage Statistics agrees.
 
 The run sent one Push-Pull job for each of the 114 documented sources that no earlier note records.
@@ -36,7 +36,7 @@ The raw captures stay outside the repo.
   28 sources ran rendered without `render`, and the file of forced domains that the docs link matches only some of them.
 - **Docs.**
   No source page of today's docs names 35 of the 123 sources, and all 35 took a job.
-  Today's docs name 32 sources that the [Parameter catalog](parameter-catalog.md) of 2026-09-24 does not.
+  Today's docs name 32 sources that the [Parameter catalog](parameter-catalog.md) of 2026-09-24 does not, and the API knows all 32.
 
 ## Runs
 
@@ -45,6 +45,7 @@ The raw captures stay outside the repo.
 | First | 21:49 to 21:50 | One job for each of the 114 sources | 90 |
 | Retry | 21:50 | The six rejected payloads again, each with the parameter its 400 named | 5 |
 | Extra | 21:56 | One job each on `google_ads`, `google_maps` and `google_shopping_search` with the `context` keys their job objects leave out, and one `walmart_product` job with four parameters | 1 |
+| New sources | 22:09 | Each of the 32 sources that the docs added after the catalog, without an input | 0 |
 
 Every call went over HTTP/2.
 
@@ -124,7 +125,7 @@ With the parameter, each job object held it: the short objects of Grainger and M
 ## Results
 
 Of the 118 jobs, 96 ended `done` and billed one result each, and 21 faulted with 613.
-`google_shopping_product`, whose docs sample holds a placeholder instead of a product token, was still `pending` 16 minutes after its submission.
+`google_shopping_product`, whose docs sample holds a placeholder instead of a product token, was still `pending` 20 minutes after its submission.
 
 | Run | Sources whose job faulted |
 | --- | --- |
@@ -177,7 +178,9 @@ Today most targets have one page, and no current source page names these 35 sour
 Their old pages, such as `api-targets/e-commerce/avnet.md`, return a "Page Not Found" page with status 200.
 All 35 took a job in this run.
 The index also names 32 sources that the catalog lacks: the `_product` and `_search` sources of `bakersplus`, `citymarket`, `dillons`, `foodfourless`, `fredmeyer`, `frysfood`, `gerbes`, `harristeeter`, `kingsoopers`, `marianos`, `metromarket`, `picknsave`, `qfc`, `ralphs`, `safeway` and `smithsfoodanddrug`.
-The run sent none of them.
+The run sent each of them without an input, which the API rejects for free.
+Each returned 400 with an `errors` list that named its input key, such as `[product_id]: This field is missing.`, so the API knows all 32.
+`safeway_product` and `safeway_search` also listed `[zip_code]: This field is missing.`
 
 ## Usage Statistics
 
@@ -192,7 +195,7 @@ Another client on the account added 6,770 `amazon_product` results in the same w
 - **Google keys.**
   The three jobs that sent the keys their job objects leave out faulted, so the run could not see whether the keys take effect.
 - **New sources.**
-  The run did not submit the 32 sources that the docs added after the catalog.
+  The run created no job on the 32 sources that the docs added after the catalog, so their job objects are unknown.
 
 ## Sources
 

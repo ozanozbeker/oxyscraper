@@ -327,3 +327,236 @@ def test_dry_run_one_payload() -> None:
     assert report.jobs == [{"source": "universal", "url": "https://example.com"}]
     assert report.job_count == 1
     assert report.max_results == 1
+
+
+BROWSER_INSTRUCTIONS = [
+    {"type": "click", "selector": {"type": "xpath", "value": "//button"}},
+    {
+        "type": "input",
+        "selector": {"type": "css", "value": "#search"},
+        "value": "pizza boxes",
+    },
+    {"type": "scroll", "x": 0, "y": 100},
+    {"type": "scroll_to_bottom", "timeout_s": 10},
+    {"type": "wait", "wait_time_s": 0},
+    {
+        "type": "wait_for_element",
+        "selector": {"type": "text", "value": "Load More Items"},
+        "timeout_s": 60,
+        "wait_time_s": 60,
+        "on_error": "skip",
+    },
+    {"type": "fetch_resource", "filter": "/graphql/item/", "on_error": "error"},
+]
+
+
+def test_browser_instructions(build: Build) -> None:
+    """Each browser instruction type in its documented shape goes into the body as it is."""
+    payload = build(
+        source="universal",
+        url="https://example.com",
+        render="html",
+        browser_instructions=BROWSER_INSTRUCTIONS,
+    )
+    assert payload.model_dump()["browser_instructions"] == BROWSER_INSTRUCTIONS
+
+
+@pytest.mark.parametrize(
+    ("instruction", "message"),
+    [
+        ({"type": "Click", "selector": {"type": "css", "value": "a"}}, "Click"),
+        ({"type": "click"}, "selector"),
+        ({"type": "click", "selector": "a"}, "selector"),
+        ({"type": "click", "selector": {"type": "id", "value": "a"}}, "id"),
+        ({"type": "input", "selector": {"type": "css", "value": "a"}}, "value"),
+        (
+            {"type": "input", "selector": {"type": "css", "value": "a"}, "value": 1},
+            "value",
+        ),
+        ({"type": "scroll", "y": 100}, "x"),
+        ({"type": "fetch_resource"}, "filter"),
+        ({"type": "wait", "timeout_s": 0}, "timeout_s"),
+        ({"type": "wait", "timeout_s": 61}, "timeout_s"),
+        ({"type": "wait", "wait_time_s": -1}, "wait_time_s"),
+        ({"type": "wait", "wait_time_s": 2.5}, "wait_time_s"),
+        ({"type": "wait", "on_error": "suppress"}, "on_error"),
+        ({"type": "wait", "wait_time": 5}, "wait_time"),
+    ],
+)
+def test_browser_instruction_raises(
+    build: Build, instruction: dict[str, Any], message: str
+) -> None:
+    """A browser instruction that its type does not take raises."""
+    with pytest.raises(ValidationError, match=message):
+        build(
+            source="universal",
+            url="https://example.com",
+            render="html",
+            browser_instructions=[instruction],
+        )
+
+
+@pytest.mark.parametrize(
+    "instructions",
+    [
+        [{"type": "fetch_resource", "filter": "/api"}, {"type": "wait"}],
+        [
+            {"type": "fetch_resource", "filter": "/api"},
+            {"type": "fetch_resource", "filter": "/api"},
+        ],
+    ],
+)
+def test_after_fetch_resource(build: Build, instructions: list[Any]) -> None:
+    """An instruction after `fetch_resource` raises, because the API returns 500 for it."""
+    with pytest.raises(ValidationError, match="fetch_resource must be the last"):
+        build(
+            source="universal",
+            url="https://example.com",
+            render="html",
+            browser_instructions=instructions,
+        )
+
+
+@pytest.mark.parametrize("pattern", ["(", "["])
+def test_fetch_resource_filter(build: Build, pattern: str) -> None:
+    """A `filter` that Python's `re` cannot compile raises, because the API returns 500 for it."""
+    with pytest.raises(ValidationError, match="not a valid regex"):
+        build(
+            source="universal",
+            url="https://example.com",
+            render="html",
+            browser_instructions=[{"type": "fetch_resource", "filter": pattern}],
+        )
+
+
+def pipeline(*functions: dict[str, Any]) -> dict[str, Any]:
+    """Return a field whose pipeline runs `functions` in order."""
+    return {"_fns": list(functions)}
+
+
+PRICE = {"_fn": "xpath_one", "_args": ["//div[@class='price']/text()"]}
+PRICES = {"_fn": "xpath", "_args": ["//div[@class='price']/text()"]}
+TEXT = {"_fn": "xpath_one", "_args": ["//p/text()"]}
+
+PARSING_INSTRUCTIONS = {
+    "element_text": pipeline(
+        {"_fn": "css_one", "_args": [".title"]}, {"_fn": "element_text"}
+    ),
+    "xpath": pipeline({"_fn": "xpath", "_args": ["//li/text()", "//p/text()"]}),
+    "xpath_bare": pipeline({"_fn": "xpath", "_args": "//li/text()"}),
+    "xpath_one": pipeline({"_fn": "xpath_one", "_args": ["//li/text()"]}),
+    "xpath_one_bare": pipeline({"_fn": "xpath_one", "_args": "//li/text()"}),
+    "css": pipeline({"_fn": "css", "_args": ["#socks .item"]}),
+    "css_bare": pipeline({"_fn": "css", "_args": "#socks .item"}),
+    "css_one": pipeline({"_fn": "css_one", "_args": ["#socks .title"]}),
+    "amount_from_string": pipeline(PRICE, {"_fn": "amount_from_string"}),
+    "amount_range_from_string": pipeline(PRICE, {"_fn": "amount_range_from_string"}),
+    "join": pipeline(PRICES, {"_fn": "join", "_args": " | "}),
+    "join_default": pipeline(PRICES, {"_fn": "join"}),
+    "regex_find_all": pipeline(TEXT, {"_fn": "regex_find_all", "_args": [r"\[(.*)\]"]}),
+    "regex_search": pipeline(TEXT, {"_fn": "regex_search", "_args": ["{(.*)}", 1]}),
+    "regex_search_default": pipeline(
+        TEXT, {"_fn": "regex_search", "_args": ["{(.*)}"]}
+    ),
+    "regex_substring": pipeline(
+        TEXT, {"_fn": "regex_substring", "_args": [r"\{(.*)\}", r"<\1>"]}
+    ),
+    "length": pipeline(PRICES, {"_fn": "length"}),
+    "select_nth": pipeline(PRICES, {"_fn": "select_nth", "_args": -1}),
+    "convert_to_float": pipeline(PRICE, {"_fn": "convert_to_float"}),
+    "convert_to_int": pipeline(PRICE, {"_fn": "convert_to_int"}),
+    "convert_to_str": pipeline(
+        PRICE, {"_fn": "convert_to_float"}, {"_fn": "convert_to_str"}
+    ),
+    "average": pipeline(PRICES, {"_fn": "average"}),
+    "average_rounded": pipeline(PRICES, {"_fn": "average", "_args": 0}),
+    "max": pipeline(PRICES, {"_fn": "max"}),
+    "min": pipeline(PRICES, {"_fn": "min"}),
+    "product": pipeline(PRICES, {"_fn": "product"}),
+    "products": {
+        "_fns": [{"_fn": "xpath", "_args": ["//div[@class='product']"]}],
+        "_items": {"title": pipeline({"_fn": "xpath_one", "_args": ["./div/text()"]})},
+    },
+    "shoes": {
+        "_on_error": "suppress",
+        "title": {"_on_error": "warn", **pipeline(TEXT)},
+        "price": {"_on_error": "error", **pipeline(PRICE, {"_fn": "convert_to_float"})},
+    },
+}
+
+
+def test_parsing_instructions(build: Build) -> None:
+    """Each parsing function in its documented shape, `_items`, `_on_error` and nested fields go into the body as they are."""
+    payload = build(
+        source="universal",
+        url="https://example.com",
+        parse=True,
+        parsing_instructions=PARSING_INSTRUCTIONS,
+    )
+    assert payload.model_dump()["parsing_instructions"] == PARSING_INSTRUCTIONS
+
+
+@pytest.mark.parametrize(
+    ("function", "message"),
+    [
+        ({"_fn": "XPATH", "_args": ["//a"]}, "XPATH"),
+        ({"_args": ["//a"]}, "_fn"),
+        ({"_fn": "xpath", "_args": ["//a"], "foo": 1}, "foo"),
+        ({"_fn": "xpath"}, r"xpath\._args"),
+        ({"_fn": "xpath", "_args": None}, r"xpath\._args"),
+        ({"_fn": "xpath", "_args": []}, r"xpath\._args"),
+        ({"_fn": "xpath", "_args": [1]}, r"xpath\._args"),
+        ({"_fn": "css_one", "_args": "#a"}, r"css_one\._args"),
+        ({"_fn": "length", "_args": [1]}, r"length\._args"),
+        ({"_fn": "join", "_args": [" "]}, r"join\._args"),
+        ({"_fn": "join", "_args": 1}, r"join\._args"),
+        ({"_fn": "select_nth", "_args": [0]}, r"select_nth\._args"),
+        ({"_fn": "select_nth", "_args": "1"}, r"select_nth\._args"),
+        ({"_fn": "select_nth", "_args": True}, r"select_nth\._args"),
+        ({"_fn": "average", "_args": [1]}, r"average\._args"),
+        ({"_fn": "regex_find_all", "_args": r"\d"}, r"regex_find_all\._args"),
+        ({"_fn": "regex_search", "_args": r"\d"}, r"regex_search\._args"),
+        ({"_fn": "regex_search", "_args": [r"\d", "1"]}, r"regex_search\._args"),
+        ({"_fn": "regex_search", "_args": [r"\d", 1, 2]}, r"regex_search\._args"),
+        ({"_fn": "regex_substring", "_args": [r"\d"]}, r"regex_substring\._args"),
+        ({"_fn": "regex_find_all", "_args": ["("]}, "not a valid regex"),
+        ({"_fn": "regex_search", "_args": ["(", 1]}, "not a valid regex"),
+        ({"_fn": "regex_substring", "_args": ["[", ""]}, "not a valid regex"),
+    ],
+)
+def test_parsing_function_raises(
+    build: Build, function: dict[str, Any], message: str
+) -> None:
+    """A parsing function with an `_args` shape or a key that it does not take raises, even where the API bills it."""
+    with pytest.raises(ValidationError, match=message) as caught:
+        build(
+            source="universal",
+            url="https://example.com",
+            parse=True,
+            parsing_instructions={"shoes": {"price": pipeline(PRICE, function)}},
+        )
+    assert "parsing_instructions.shoes.price._fns.1" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("instructions", "message"),
+    [
+        ({"title": {"_fns": {"_fn": "element_text"}}}, r"title\._fns"),
+        ({"title": {"_on_error": "ignore", **pipeline(TEXT)}}, r"title\._on_error"),
+        ({"products": {"_items": [pipeline(TEXT)]}}, r"products\._items"),
+        ({"title": "//p/text()"}, "title"),
+        ("//p/text()", "parsing_instructions"),
+        ([pipeline(TEXT)], "parsing_instructions"),
+    ],
+)
+def test_parsing_instructions_raise(
+    build: Build, instructions: object, message: str
+) -> None:
+    """A field that is not an object, a `_fns` that is not a list, or an unknown `_on_error` raises."""
+    with pytest.raises(ValidationError, match=message):
+        build(
+            source="universal",
+            url="https://example.com",
+            parse=True,
+            parsing_instructions=instructions,
+        )

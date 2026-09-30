@@ -31,12 +31,14 @@ Repository = "https://github.com/ozanozbeker/oxyscraper"
 
 [dependency-groups]
 dev = [
+  "coverage>=7.16.2",
   "prek>=0.5.2",
   "pyrefly>=1.2.0",
   "pytest>=9.1.1",
   "ruff>=0.16.6",
   "rumdl>=0.2.68",
   "tombi>=1.5.2",
+  "trio>=0.34.0",
 ]
 # Not in `dev`, so the test and lint jobs skip Quarto's Jupyter stack.
 docs = ["great-docs>=0.17"]
@@ -45,9 +47,18 @@ docs = ["great-docs>=0.17"]
 requires = ["uv_build>=0.12.18,<0.13.0"]
 build-backend = "uv_build"
 
+[tool.coverage.run]
+source_pkgs = ["oxyscraper"]
+
+[tool.coverage.report]
+# Every other exclusion is a `# pragma: no cover` that a reviewer sees.
+exclude_also = ["if TYPE_CHECKING:"]
+show_missing = true
+
 [tool.pytest.ini_options]
-addopts = ["-ra", "--strict-config", "--strict-markers", "--import-mode=importlib"]
+addopts = ["-ra", "--strict-config", "--strict-markers", "--import-mode=importlib", "-m", "not live"]
 # A new upstream deprecation fails the Dependabot PR that brings it in, before the removal breaks oxy.
 filterwarnings = ["error"]
+markers = ["live: calls the Oxylabs API and bills the account, so only `-m live` selects it"]
 testpaths = ["tests"]
 xfail_strict = true

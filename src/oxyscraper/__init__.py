@@ -11,7 +11,17 @@ from oxyscraper._payloads import (
     ParsingInstructions,
     Payload,
 )
-from oxyscraper._sessions import DryRun, dry_run
+from oxyscraper._sessions import (
+    AsyncRun,
+    AsyncSession,
+    DryRun,
+    Job,
+    Result,
+    Run,
+    Session,
+    Upload,
+    dry_run,
+)
 
 __all__ = [
     "SOURCES",
@@ -21,10 +31,17 @@ __all__ = [
     "AmazonProduct",
     "AmazonSearch",
     "AmazonSellers",
+    "AsyncRun",
+    "AsyncSession",
     "BrowserInstruction",
     "DryRun",
+    "Job",
     "ParsingFunction",
     "ParsingInstructions",
     "Payload",
+    "Result",
+    "Run",
+    "Session",
+    "Upload",
     "dry_run",
 ]

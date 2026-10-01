@@ -21,6 +21,8 @@ import anyio
 import httpx2
 from typing_extensions import override
 
+from oxyscraper._payloads import _CREDENTIALS
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -792,7 +794,7 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
         self, payload: dict[str, Any], *, realtime: bool = False
     ) -> Outcome | Rejected:
         """Apply the API's free checks, then the test's outcome."""
-        rejected = _check(payload)
+        rejected = _check(payload) or _storage_error(payload)
         if rejected is None and realtime:
             rejected = _realtime_error(payload)
         if rejected:
@@ -870,6 +872,8 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
                 "created_at": created,
                 "updated_at": updated,
             }
+            if job.storage_url:
+                obj["storage_url"] = job.storage_url
         if not job.realtime:
             base = f"http://data.oxylabs.io/v1/queries/{job.id}"
             first = obj.get("start_page", 1)
@@ -1178,6 +1182,22 @@ def _realtime_error(payload: dict[str, Any]) -> Rejected | None:
     return None
 
 
+def _storage_error(payload: dict[str, Any]) -> Rejected | None:
+    storage_url = payload.get("storage_url")
+    if payload.get("storage_type") not in {"s3_compatible", "tos"} or not isinstance(
+        storage_url, str
+    ):
+        return None
+    # A raw `/`, `?` or `#` in the secret ends the host, so the API reads the rest of the secret as a port.
+    try:
+        userinfo = httpx2.URL(storage_url).userinfo
+    except httpx2.InvalidURL:
+        return Rejected("Parameter `storage_url` must be a valid url.")
+    if b":" not in userinfo:
+        return Rejected("Parameter `storage_url` must contain a valid user info.")
+    return None
+
+
 def _pages_error(source: str, pages: object) -> Rejected | None:
     if not isinstance(pages, int) or pages < 1:
         return Rejected("Parameter `pages` should be a positive integer.")
@@ -1265,4 +1285,4 @@ def _resolve(storage_url: str, job_id: str, payload: dict[str, Any]) -> str:
     }
     for variable, value in variables.items():
         name = name.replace("{{ " + variable + " }}", value)
-    return re.sub(r"://[^/@:]+:[^/@]+@", "://redacted:redacted@", name)
+    return _CREDENTIALS.sub("redacted:redacted", name)

@@ -349,6 +349,32 @@ Each sent a `storage_url` of the form `https://FAKEKEYID:FAKESECRET@<name>.com/b
 
 So an upload to an endpoint that does not resolve recorded no code within 48 minutes, and a client that waits for the entry needs a limit.
 
+## Probes on 2026-10-01
+
+A probe for [Redact every credential in a storage_url](https://github.com/ozanozbeker/oxyscraper/issues/107) sent 13 submissions with `storage_type` set to `s3_compatible` or `tos`, and a `storage_url` of the form `https://<userinfo>@<name>.com/bucket/folder`.
+11 were `universal` fault jobs, and 2 were `walmart_product` jobs.
+It billed 1 result, for the one `walmart_product` job that the API took.
+
+### Secrets that are not URL-safe
+
+| Userinfo sent | Status | Body, or the job's `storage_url` |
+| --- | --- | --- |
+| `FAKEKEYID:FAKE/SECRET`, `FAKEKEYID:FAKE?SECRET`, `FAKEKEYID:FAKE#SECRET` or `FAKEKEYID:F/A?K#E@SECRET` | 400 | ``Parameter `storage_url` must be a valid url.`` |
+| `FAKEKEYID:FAKE@SECRET`, `FAKEKEYID:FAKE:SECRET` or `FAKEKEYID:F%2FA%3FK%23E%40SECRET` | 202 | `https://redacted:redacted@<name>.com/bucket/folder/<job_id>.json` |
+| `FAKETOKEN`, or none | 400 | ``Parameter `storage_url` must contain a valid user info.`` |
+
+- `tos` returned the same 400s as `s3_compatible` for `/`, for `FAKETOKEN` and for no userinfo.
+- A raw `/`, `?` or `#` ends the host, so the rest of the secret reads as a port.
+  A raw `@` stays in the userinfo, which runs to the last `@`.
+- No upload ran, so the probe could not see whether the API decodes a percent-encoded secret before it signs the upload.
+
+### A source that returns the payload alone
+
+`walmart_product` returns the payload alone ([The short job object](live-job-objects.md#the-short-job-object)).
+Its job object held the resolved and redacted `storage_url`, `https://redacted:redacted@<name>.com/bucket/folder/<job_id>.json`, not the value sent.
+The job ended `done` within 4 seconds, and 7 minutes later its object still had no `statuses` key.
+An endpoint that does not resolve also leaves `statuses` empty on a full job object, so this does not show whether a successful upload adds the key.
+
 ## Open questions
 
 - **13103.**

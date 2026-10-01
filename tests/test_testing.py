@@ -170,6 +170,23 @@ async def test_short_job_object(fake: FakeOxylabs) -> None:
 
 
 @pytest.mark.parametrize(
+    "payload", [universal(), {"source": "walmart_product", "product_id": "11601059297"}]
+)
+async def test_job_object_redacts(fake: FakeOxylabs, payload: dict[str, Any]) -> None:
+    """Every job object holds the resolved `storage_url`, with a secret that holds `@` redacted."""
+    storage = {
+        "storage_type": "s3_compatible",
+        "storage_url": "https://key:hush@hush@example.com/bucket",
+    }
+    async with client(fake) as http:
+        job = (await http.post(DATA, json=payload | storage)).json()
+    assert (
+        job["storage_url"]
+        == "https://redacted:redacted@example.com/bucket/7500000000000000001.json"
+    )
+
+
+@pytest.mark.parametrize(
     ("payload", "key", "value"),
     [
         (
@@ -444,6 +461,34 @@ async def test_outcome_function(fake: FakeOxylabs) -> None:
         (
             {"source": "universal", "url": "https://sandbox.oxylabs.test/"},
             "Parameter `url` has invalid top level domain format.",
+        ),
+        (
+            universal(
+                storage_type="s3_compatible",
+                storage_url="https://key:hush/hush@example.com/bucket",
+            ),
+            "Parameter `storage_url` must be a valid url.",
+        ),
+        (
+            {
+                "source": "walmart_product",
+                "product_id": "11601059297",
+                "storage_type": "tos",
+                "storage_url": "https://key:hush?hush@example.com/bucket",
+            },
+            "Parameter `storage_url` must be a valid url.",
+        ),
+        (
+            universal(
+                storage_type="tos", storage_url="https://hush@example.com/bucket"
+            ),
+            "Parameter `storage_url` must contain a valid user info.",
+        ),
+        (
+            universal(
+                storage_type="s3_compatible", storage_url="https://example.com/bucket"
+            ),
+            "Parameter `storage_url` must contain a valid user info.",
         ),
     ],
 )

@@ -5,7 +5,7 @@ GitBook exports the docs to `oxylabs/gitbook-public-english`, which is private, 
 Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the parameter and retention entries, and links the test behind it.
 The two entries on storage endpoints, the entry on a 400's `errors` list, the entries from the `universal` and Amazon runs and the entry on LLM sources through Realtime cite the pages as published on 2026-09-29.
 The entries on `pages` limits, on a job larger than a rate limit and from the job object run cite the pages as published on 2026-09-30.
-The entries from the input check run cite the pages as published on 2026-10-01.
+The entries from the input check run and the entry on secrets in `storage_url` cite the pages as published on 2026-10-01.
 
 ## Statements the API contradicts
 
@@ -383,6 +383,14 @@ The entries from the input check run cite the pages as published on 2026-10-01.
   [File name templating][file-name-templating] says the job's `storage_url` shows the resolved path, and does not say what happens to the credentials.
 - **API:** the submission and the status endpoint returned `https://redacted:redacted@<host>/bucket/folder/<job_id>.json`.
 - **Evidence:** [An endpoint that does not resolve](docs/research/cloud-storage.md#an-endpoint-that-does-not-resolve).
+
+### Cloud Storage: a secret in `storage_url` needs percent-encoding
+
+- **Docs:** [Cloud Storage][cloud-storage] forms the URL as `https://ACCESS_KEY_ID:ACCESS_KEY_SECRET@...`, and does not say how to write a secret that holds `/`, `?`, `#` or `@`.
+- **API:** a raw `/`, `?` or `#` in the secret returned the free 400 ``Parameter `storage_url` must be a valid url.`` on `s3_compatible` and `tos`.
+  A raw `@`, a `:` and a percent-encoded secret each returned 202, and the job's `storage_url` redacted the whole userinfo.
+  A userinfo without `:`, or none, returned ``Parameter `storage_url` must contain a valid user info.``
+- **Evidence:** [Secrets that are not URL-safe](docs/research/cloud-storage.md#secrets-that-are-not-url-safe).
 
 ### Push-Pull: 97 of the 123 sources take no batch
 

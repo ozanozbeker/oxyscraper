@@ -52,7 +52,8 @@ _INPUT_KEYS = (
     "channel_handle",
     "category_id",
 )
-_CREDENTIALS = re.compile(r"(?<=://)[^/?#@\s\"']+(?=@)")
+# The API reads the userinfo up to the last `@`, and the first branch also covers a raw `/`, `?` or `#` in a secret, which the API rejects.
+_CREDENTIALS = re.compile(r"(?<=://)(?:[^/?#:\s\"']*:[^\s\"']*|[^/?#\s\"']+)(?=@)")
 
 _Device = Literal[
     "desktop",
@@ -367,6 +368,7 @@ class Payload(BaseModel):
         The bucket path that Cloud Storage uploads to.
         A path that ends in `.{{ extension }}` names each job's object, so it raises without `{{ job_id }}`: jobs that share a name lose their uploads and still bill.
         `repr`, validation errors and `dry_run` show its credentials as `redacted:redacted`, as the API does.
+        The API returns a free 400 for a raw `/`, `?` or `#` in the secret, and accepts it percent-encoded.
         A document that is not valid JSON fails before any `Payload` code runs, so only `Payload.model_validate_json` redacts that error.
         A caller's `TypeAdapter` or model that holds a `Payload` keeps the whole document in `errors()` and `json()`, credentials included.
     parsing_instructions
@@ -986,6 +988,9 @@ def _scrub(value: object) -> object:
         return {key: _scrub(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_scrub(item) for item in value]
+    # `ValidationError.json()` serializes a model's input with the model's own serializer.
+    if isinstance(value, BaseModel):
+        return _scrub(value.model_dump())
     return value
 
 

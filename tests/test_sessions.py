@@ -1,9 +1,11 @@
 import dataclasses
+import logging
 import math
+import re
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from importlib.metadata import version
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 import httpx2
@@ -11,7 +13,7 @@ import pytest
 from typing_extensions import override
 
 import oxyscraper as oxy
-from oxyscraper.testing import FakeOxylabs, Outcome
+from oxyscraper.testing import FakeOxylabs, Outcome, Rejected
 
 pytestmark = pytest.mark.anyio
 
@@ -37,6 +39,29 @@ def checks(fake: FakeOxylabs) -> int:
     return sum(request.url.path.endswith("/results") for request in fake.requests)
 
 
+def submissions(fake: FakeOxylabs) -> int:
+    return sum(request.method == "POST" for request in fake.requests)
+
+
+def warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return sorted(
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "oxyscraper" and record.levelno == logging.WARNING
+    )
+
+
+async def incomplete(run: oxy.AsyncRun) -> oxy.IncompleteRunError:
+    with pytest.raises(oxy.IncompleteRunError) as caught:
+        await run.all()
+    return caught.value
+
+
+def cause(error: oxy.IncompleteRunError) -> oxy.OxylabsError:
+    assert isinstance(error.__cause__, oxy.OxylabsError)
+    return error.__cause__
+
+
 class Slow(FakeOxylabs):
     """Answer each request after a second, and record the most requests at once."""
 
@@ -51,6 +76,21 @@ class Slow(FakeOxylabs):
         self.most = max(self.most, self.active)
         await anyio.sleep(1)
         self.active -= 1
+        return await super().handle_async_request(request)
+
+
+class Garbled(FakeOxylabs):
+    """Answer the first results download with a body that is not JSON."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.garbled = 0
+
+    @override
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        if request.url.path.endswith("/results") and not self.garbled:
+            self.garbled += 1
+            return httpx2.Response(200, text="<html>")
         return await super().handle_async_request(request)
 
 
@@ -231,3 +271,323 @@ async def test_transport_wins(fake: FakeOxylabs) -> None:
     async with open_async_session(transport=given) as session:
         await session.execute(universal())
     assert (len(given.jobs), len(fake.jobs)) == (1, 0)
+
+
+THROTTLE = "Access to sandbox.oxylabs.io has been limited to 1 req/s due to a low success rate. If you are using custom headers or cookies, ensure they are correct, then try again. The normal request limit will be restored automatically when the success rate improves."
+
+
+@on_mock_clock
+@pytest.mark.parametrize(
+    "error",
+    [
+        429,
+        503,
+        httpx2.ReadTimeout("no answer"),
+        httpx2.ConnectError("refused"),
+        httpx2.RemoteProtocolError("closed"),
+    ],
+)
+@pytest.mark.parametrize("on", ["submit", "results"])
+async def test_retries(
+    fake: FakeOxylabs, error: int | Exception, on: Literal["submit", "results"]
+) -> None:
+    """oxy retries a 429, a 5xx and a network error on a submission and on a check."""
+    fake.fail(error, on=on, times=3)
+    async with open_async_session() as session:
+        job = (await session.execute(universal())).one()
+    assert job.status == "done"
+    assert len(fake.requests) == 5
+
+
+@on_mock_clock
+async def test_retries_a_body_that_is_not_json() -> None:
+    """A 2xx whose body does not parse retries."""
+    fake = Garbled()
+    async with open_async_session(transport=fake) as session:
+        job = (await session.execute(universal())).one()
+    assert (job.status, fake.garbled) == ("done", 1)
+
+
+@on_mock_clock
+@pytest.mark.parametrize(
+    ("error", "shown"),
+    [
+        (503, "503 Service Unavailable"),
+        (httpx2.ReadTimeout("no answer"), "ReadTimeout: no answer"),
+        (httpx2.ConnectError("refused"), None),
+        (429, None),
+    ],
+)
+async def test_unknown_outcome(
+    fake: FakeOxylabs,
+    caplog: pytest.LogCaptureFixture,
+    error: int | Exception,
+    shown: str | None,
+) -> None:
+    """A submission retried after a 5xx or a read error writes a WARNING line, and one that never reached a job writes none."""
+    fake.fail(error, on="submit")
+    payload = universal()
+    async with open_async_session() as session:
+        await session.execute(payload)
+    line = f"Retrying a submission of universal {payload.url} after {shown}; the API may have created its job, and a duplicate bills"
+    assert warnings(caplog) == ([line] if shown else [])
+
+
+@on_mock_clock
+async def test_retry_limit(fake: FakeOxylabs) -> None:
+    """A submission stops retrying `retry_limit` seconds after its first failure, and stops the run."""
+    fake.fail(503, on="submit", times=None)
+    payload = universal()
+    async with open_async_session(retry_limit=5) as session:
+        started = anyio.current_time()
+        error = await incomplete(await session.stream(payload))
+        elapsed = anyio.current_time() - started
+    assert elapsed == pytest.approx(5)
+    assert (error.unsubmitted, error.rejections, error.unfetched) == ([payload], [], [])
+    assert (cause(error).status_code, cause(error).message) == (
+        503,
+        "Service Unavailable",
+    )
+    assert re.fullmatch(r"[0-9a-f]{8}-0{24}", cause(error).trace_id or "")
+    assert isinstance(cause(error).__cause__, httpx2.HTTPStatusError)
+    assert str(error) == "1 unsubmitted"
+
+
+@on_mock_clock
+@pytest.mark.parametrize(
+    ("error", "retry_limit"),
+    [(httpx2.ReadTimeout("no answer"), 0), (httpx2.ProxyError("refused"), 600)],
+)
+async def test_network_failure(
+    fake: FakeOxylabs,
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+    retry_limit: float,
+) -> None:
+    """A network error past the retry limit, or one that oxy never retries, stops the run with no status code."""
+    fake.fail(error, on="submit", times=None)
+    async with open_async_session(retry_limit=retry_limit) as session:
+        stopped = await incomplete(await session.stream(universal()))
+    shown = f"{type(error).__name__}: {error}"
+    assert submissions(fake) == 1
+    assert cause(stopped).__cause__ is error
+    assert (cause(stopped).status_code, cause(stopped).trace_id) == (None, None)
+    assert cause(stopped).message == str(cause(stopped)) == shown
+    assert warnings(caplog) == [
+        f"Stopped submitting, because httpx2 raised {shown}; 1 payloads stay unsubmitted"
+    ]
+
+
+@on_mock_clock
+async def test_rejections(caplog: pytest.LogCaptureFixture) -> None:
+    """A 400 or a 422 rejects its payload, and the run finishes the rest before it raises."""
+    fake = FakeOxylabs(
+        lambda payload: (
+            Rejected("Nope.", status_code=422)
+            if payload["url"].endswith("422")
+            else Outcome()
+        )
+    )
+    ip = oxy.Payload(source="universal", url="https://10.0.0.1/")
+    llm = universal("422")
+    async with open_async_session(transport=fake) as session:
+        error = await incomplete(await session.stream([ip, llm, universal()]))
+    [job] = error.jobs
+    assert job.status == "done"
+    assert [
+        (rejection.payload, rejection.status_code, rejection.message)
+        for rejection in error.rejections
+    ] == [(ip, 400, "The hostname cannot be an ip address."), (llm, 422, "Nope.")]
+    assert all(rejection.trace_id for rejection in error.rejections)
+    assert (error.unsubmitted, error.unfetched, error.__cause__) == ([], [], None)
+    assert warnings(caplog) == [
+        "Rejected universal https://10.0.0.1/: 400 The hostname cannot be an ip address.",
+        f"Rejected universal {llm.url}: 422 Nope.",
+    ]
+
+
+@on_mock_clock
+async def test_rejection_lists_errors() -> None:
+    """A rejection whose body has no `message` joins its `errors`."""
+    payload = oxy.Payload(source="walmart_product", query="436012154")
+    async with open_async_session() as session:
+        error = await incomplete(await session.stream(payload))
+    [rejection] = error.rejections
+    assert rejection.message == (
+        "[product_id]: This field is missing. [query]: This field was not expected."
+    )
+
+
+@on_mock_clock
+async def test_stop_yields_accepted_jobs(caplog: pytest.LogCaptureFixture) -> None:
+    """A 403 on a submission stops submission, and the run still yields the job the API accepted."""
+
+    def outcome(payload: dict[str, Any]) -> Outcome:
+        fake.fail(403, on="submit", times=None)
+        return Outcome(after=5)
+
+    fake = FakeOxylabs(outcome)
+    payloads = [universal(str(page)) for page in range(3)]
+    async with open_async_session(transport=fake) as session:
+        error = await incomplete(await session.stream(payloads))
+    [job] = error.jobs
+    assert (job.status, job.id) == ("done", fake.jobs[0]["id"])
+    assert sorted(
+        [job.input, *(str(payload.url) for payload in error.unsubmitted)]
+    ) == [str(payload.url) for payload in payloads]
+    assert cause(error).status_code == 403
+    assert warnings(caplog) == [
+        "Stopped submitting, because the API returned 403 Forbidden; 2 payloads stay unsubmitted"
+    ]
+
+
+@on_mock_clock
+async def test_domain_throttle(fake: FakeOxylabs) -> None:
+    """The domain throttle's 429 stops submission without a retry."""
+    fake.fail(429, on="submit", times=None, message=THROTTLE)
+    payload = universal()
+    async with open_async_session() as session:
+        error = await incomplete(await session.stream(payload))
+    assert (submissions(fake), error.unsubmitted) == (1, [payload])
+    assert (cause(error).status_code, cause(error).message) == (429, THROTTLE)
+
+
+@on_mock_clock
+async def test_unauthorized_check(caplog: pytest.LogCaptureFixture) -> None:
+    """A 401 on a check stops the run at once, with every pending job unfetched."""
+
+    def outcome(payload: dict[str, Any]) -> Outcome:
+        fake.fail(401, on="results", times=None)
+        return Outcome(after=30)
+
+    fake = FakeOxylabs(outcome)
+    async with open_async_session(transport=fake) as session:
+        started = anyio.current_time()
+        error = await incomplete(await session.stream([universal("1"), universal("2")]))
+        elapsed = anyio.current_time() - started
+    assert elapsed == 1
+    assert sorted(job.id for job in error.unfetched) == [job["id"] for job in fake.jobs]
+    assert {job.status for job in error.unfetched} == {"pending"}
+    assert cause(error).status_code == 401
+    assert warnings(caplog) == [
+        "Stopped checking 2 jobs, because the API returned 401 Unauthorized; each may still bill"
+    ]
+
+
+@on_mock_clock
+async def test_failed_read(fake: FakeOxylabs, caplog: pytest.LogCaptureFixture) -> None:
+    """A read that returns an error moves only its own job into `unfetched`."""
+    fake.fail(404, on="results")
+    async with open_async_session() as session:
+        error = await incomplete(await session.stream([universal("1"), universal("2")]))
+    [job] = error.jobs
+    [unfetched] = error.unfetched
+    assert (job.status, unfetched.status, unfetched.results) == ("done", "pending", [])
+    assert error.__cause__ is None
+    assert warnings(caplog) == [
+        f"Stopped checking job {unfetched.id}, because the API returned 404 Not Found: universal {unfetched.input}"
+    ]
+
+
+@on_mock_clock
+async def test_read_out_of_retries(fake: FakeOxylabs) -> None:
+    """A check out of retries moves its job into `unfetched`, and stops nothing else."""
+    fake.fail(503, on="results", times=None)
+    async with open_async_session(retry_limit=5) as session:
+        error = await incomplete(await session.stream(universal()))
+    assert [job.id for job in error.unfetched] == [fake.jobs[0]["id"]]
+    assert (error.unsubmitted, error.__cause__) == ([], None)
+
+
+@on_mock_clock
+@pytest.mark.parametrize(
+    ("limit", "shown"),
+    [(0.5, "500ms"), (20, "20.00s"), (90, "1m 30s"), (3700, "1h 01m 40s")],
+)
+async def test_pending_limit(
+    caplog: pytest.LogCaptureFixture, limit: float, shown: str
+) -> None:
+    """A check that shows a job pending at or past the pending limit moves it into `unfetched`."""
+    fake = FakeOxylabs(Outcome(after=math.inf))
+    payload = universal()
+    async with open_async_session(transport=fake, pending_limit=limit) as session:
+        started = anyio.current_time()
+        error = await incomplete(await session.stream(payload))
+        elapsed = anyio.current_time() - started
+    [job] = error.unfetched
+    assert elapsed == max(limit, 1)
+    assert warnings(caplog) == [
+        f"Stopped checking job {job.id}, because it is still pending after {shown}: universal {payload.url}"
+    ]
+
+
+@on_mock_clock
+async def test_no_pending_limit() -> None:
+    """`pending_limit=None` checks a job until it finishes."""
+    fake = FakeOxylabs(Outcome(after=700))
+    async with open_async_session(transport=fake, pending_limit=None) as session:
+        job = (await session.execute(universal())).one()
+    assert job.status == "done"
+
+
+@on_mock_clock
+async def test_faulted(caplog: pytest.LogCaptureFixture) -> None:
+    """A run whose only problem is a faulted job yields it and raises nothing."""
+    fake = FakeOxylabs(Outcome(status="faulted"))
+    payload = universal()
+    async with open_async_session(transport=fake) as session:
+        job = (await session.execute(payload)).one()
+    assert job.status == "faulted"
+    assert warnings(caplog) == [f"Job {job.id} faulted: universal {payload.url}"]
+
+
+def test_all_keeps_collected_jobs() -> None:
+    """`Run.all` stores the jobs it collected in the error it raises."""
+    ip = oxy.Payload(source="universal", url="https://10.0.0.1/")
+    with open_session() as session:
+        run = session.execute([ip, universal()])
+        with pytest.raises(oxy.IncompleteRunError) as caught:
+            run.all()
+    [job] = caught.value.jobs
+    assert job.status == "done"
+
+
+def test_partitions_yield_the_partial_list() -> None:
+    """`Run.partitions` yields its partial list before it raises."""
+    ip = oxy.Payload(source="universal", url="https://10.0.0.1/")
+    with open_session() as session:
+        partitions = session.execute([ip, universal()]).partitions(5)
+        [job] = next(partitions)
+        with pytest.raises(oxy.IncompleteRunError) as caught:
+            next(partitions)
+    assert job.status == "done"
+    assert caught.value.jobs == []
+
+
+@on_mock_clock
+async def test_get_raises(fake: FakeOxylabs) -> None:
+    """`get` raises `OxylabsError` with the status code, message and trace ID."""
+    async with open_async_session(retry_limit=0) as session:
+        with pytest.raises(oxy.OxylabsError) as missing:
+            await session.get("7000000000000000001")
+        fake.fail(401, on="results")
+        with pytest.raises(oxy.OxylabsError) as unauthorized:
+            await session.get("7000000000000000001")
+        fake.fail(500, on="results")
+        with pytest.raises(oxy.OxylabsError) as server:
+            await session.get("7000000000000000001")
+    assert (missing.value.status_code, missing.value.message) == (
+        404,
+        "Query not found.",
+    )
+    assert missing.value.trace_id == f"{1:08x}-{'0' * 24}"
+    assert str(missing.value) == "404 Query not found."
+    assert isinstance(missing.value.__cause__, httpx2.HTTPStatusError)
+    assert (unauthorized.value.message, unauthorized.value.trace_id) == (
+        "Unauthorized",
+        None,
+    )
+    assert (server.value.message, server.value.trace_id) == (
+        "Internal Server Error",
+        f"{2:08x}-{'0' * 24}",
+    )

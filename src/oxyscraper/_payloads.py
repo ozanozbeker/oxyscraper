@@ -30,6 +30,7 @@ from pydantic import (
     StrictInt,
     TypeAdapter,
     ValidationError,
+    WithJsonSchema,
     field_validator,
     model_serializer,
     model_validator,
@@ -40,7 +41,7 @@ from typing_extensions import TypeAliasType, TypedDict, override
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from pydantic import ModelWrapValidatorHandler
+    from pydantic.functional_validators import ModelWrapValidatorHandler
     from pydantic_core import InitErrorDetails
 
 _INPUT_KEYS = (
@@ -142,6 +143,8 @@ BrowserInstruction = Annotated[
     _Click | _Input | _Scroll | _Wait | _FetchResource, Field(discriminator="type")
 ]
 """One item of `browser_instructions`, whose `type` names one of the 7 documented instructions.
+
+pyrefly checks this shape only in a value annotated with `list[BrowserInstruction]`, not in a literal passed to a model.
 
 [JS Rendering & Browser Control](https://developers.oxylabs.io/products/web-scraper-api/features/js-rendering-and-browser-control) gives each instruction's keys.
 """
@@ -255,6 +258,9 @@ ParsingInstructions = TypeAliasType(
     "dict[str, ParsingInstructions | list[ParsingFunction] | _OnError]",
 )
 """One scope of parsing instructions, which holds a `_fns` pipeline, `_on_error`, and `_items` and fields that are scopes of their own.
+
+The value type does not depend on the key, so `{"t": "warn"}` type-checks, and `Payload` raises for it.
+pyrefly checks this shape only in a value annotated with `ParsingInstructions`, not in a literal passed to a model.
 
 [Parsing instruction examples](https://developers.oxylabs.io/products/web-scraper-api/features/custom-parser/writing-instructions-manually/parsing-instruction-examples) shows each part.
 """
@@ -414,8 +420,14 @@ class Payload(BaseModel):
     context: list[_ContextItem] | None = None
     storage_type: Literal["gcs", "s3", "tos", "s3_compatible"] | None = None
     storage_url: str | None = None
+    # pydantic before 2.9 raises for the JSON schema of a plain validator.
     parsing_instructions: (
-        Annotated[ParsingInstructions, PlainValidator(_parsing_instructions)] | None
+        Annotated[
+            ParsingInstructions,
+            PlainValidator(_parsing_instructions),
+            WithJsonSchema({}),
+        ]
+        | None
     ) = None
     browser_instructions: list[BrowserInstruction] | None = None
     extra: dict[str, Any] = {}

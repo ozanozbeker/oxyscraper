@@ -141,6 +141,46 @@ Each returned 400, so none billed.
 `walmart_product` rejects any key it does not take.
 Its body has an `errors` list of strings and no `message`, beside the usual `instance`, `timestamp` and `trace_id`.
 
+## Input checks
+
+[Match the fake's rejections for the sources that return the payload alone](https://github.com/ozanozbeker/oxyscraper/issues/86) probed the 100 sources whose job object holds the payload alone, on 2026-10-01 from 14:19 to 14:23 UTC.
+Each source got three Push-Pull submissions: one without an input key, one with only another source's input key, and one with an empty input.
+Malformed and `null` inputs, three Realtime submissions and a `chatgpt` job with `query` followed.
+The plan expected every payload to return 400 and spend 0.
+The run spent 3 results, on the two `walmart_search` jobs and the `chatgpt` job below.
+Usage Statistics agrees, and counts the `chatgpt` result as rendered.
+
+| Payload | Sources | Status | Body |
+| --- | --- | --- | --- |
+| No input key | The 97 that take no batch, but `walmart_search` | 400 | `{"errors": ["[product_id]: This field is missing."]}`, with the source's own key |
+| No `domain` | `grainger_product`, `grainger_search` and `mercadolibre_product` | 400 | `[domain]: This field is missing.` joins the list |
+| Another source's input key, such as `category_id` on `walmart_product` | The 97 | 400 | `[category_id]: This field was not expected.` joins the list |
+| An empty or `null` input | The 97 | 400 | `{"errors": ["[product_id]: This value should not be blank."]}` |
+| No input key, an empty `prompt`, or `category_id` alone | `chatgpt`, `gemini` and `perplexity` | 400 | `{"message": "Query parameter is empty."}` |
+
+- **Order.**
+  The API sorts each `errors` list as text.
+  So `[category_id]` comes before `[product_id]`, and `[product_id]: Must be` comes before `[product_id]: This value`.
+- **`walmart_search`.**
+  Without `query`, it returned 202, and the job fetched `https://www.walmart.com/all-departments` and billed.
+  Realtime did the same.
+  An empty `query` returned 400.
+- **Formats.**
+  Three sources check the input's format, and an empty input gets both its messages.
+
+  | Source | Message | Values it rejected |
+  | --- | --- | --- |
+  | `target_product` | `Must be 8 or 10 digits.` | `""`, `1234567`, `123456789` and `1234567a` |
+  | `tiktok_shop_product` | `Must be 19 digits for product_id.` | `""`, `123` and `123456789012345678a` |
+  | `target_category` | `Must be 5+ characters.` | `""` and `abcd` |
+
+- **LLM sources.**
+  `chatgpt` with `query` and no `prompt` returned 202 and created a job.
+  On Realtime, `chatgpt` without an input returned the 400 above, not the 422 that [Probes on 2026-09-29](live-api.md#probes-on-2026-09-29) records for an LLM source.
+- **Realtime.**
+  `walmart_product` without `product_id` returned the same `errors` body on Realtime.
+  The Push-Pull body put `errors` after `trace_id`, and the Realtime body put it first.
+
 ## Context keys by source
 
 A job object lists every `context` key its source takes, with its default.

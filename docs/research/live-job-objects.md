@@ -137,6 +137,7 @@ Of the 11 Google and Bing jobs of the first two runs that finished, 5 faulted, a
 
 The results entries of `universal` and of the short e-commerce sources carry `_request`, `_response` and `session_info`.
 The entries of the other 34-field sources, and of `chatgpt`, `gemini`, `youtube_channel`, `youtube_search` and `youtube_search_max`, do not.
+Nor does the `perplexity` entry of [Batches](live-parameters.md#batches).
 
 ## Forced rendering
 

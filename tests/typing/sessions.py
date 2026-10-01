@@ -22,6 +22,19 @@ with oxy.Session(username="USERNAME", password="PASSWORD") as session:  # noqa: 
     assert_type(job.content, str | bytes | dict[str, Any] | list[Any])
     assert_type(job.results[0].type, Literal["raw", "parsed", "png", "markdown", "xhr"])
     session.execute(payload, output_types=["html"])  # E: output_types
+    try:
+        session.execute(payload).all()
+    except oxy.IncompleteRunError as error:
+        assert_type(error.rejections, list[oxy.Rejection])
+        assert_type(error.unsubmitted, list[oxy.Payload])
+        assert_type(error.unfetched, list[oxy.Job])
+        assert_type(error.jobs, list[oxy.Job])
+        assert_type(error.rejections[0].trace_id, str | None)
+    try:
+        session.get("7500000000000000001")
+    except oxy.OxylabsError as error:
+        assert_type(error.status_code, int | None)
+        assert_type(error.message, str)
 
 oxy.Session(username="USERNAME")  # E: Missing argument `password`
 oxy.Session("USERNAME", password="PASSWORD")  # noqa: S106  # E: passed by name

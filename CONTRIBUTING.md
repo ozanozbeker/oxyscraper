@@ -1,6 +1,6 @@
 # Contributing
 
-This file holds the release standard for the maintainer's Python packages, and oxyscraper is its reference repo.
+This file holds how oxyscraper is changed, tested and released.
 [How is oxy versioned, documented and released?](https://github.com/ozanozbeker/oxyscraper/issues/22) records each decision and the evidence for it.
 
 ## Setup
@@ -169,14 +169,13 @@ A release published by hand starts the same two workflows, which makes it the re
 - A numpydoc `Returns` block starts with a `:` line.
   griffe, which great-docs uses, reads a bare description line as the return type.
 
-## A new repo
+## Repository settings
 
-A package that adopts this standard copies `.github/`, `release-please-config.json`, `.release-please-manifest.json`, `great-docs.yml`, `prek.toml`, the pytest and coverage tables in `pyproject.toml` and this file.
-It replaces `oxyscraper` in each, then needs this setup once:
+The workflows need these settings, which GitHub holds outside the repo:
 
-1. Install the maintainer's release App on the repo.
+1. Install a GitHub App on the repo, with write access to contents, issues and pull requests.
 2. Create the `release` environment for `main` only, with the variable `APP_CLIENT_ID` and the secret `APP_PRIVATE_KEY`.
-3. Create the `pypi` environment for `v*` tags only, with the maintainer as a required reviewer and no admin bypass.
+3. Create the `pypi` environment for `v*` tags only, with a required reviewer and no admin bypass.
 4. Create the `live` environment for `main` only, with the secrets that the live tests read.
 5. Add a pending trusted publisher on PyPI for `release.yml` and the `pypi` environment.
 6. Sign the repo in to Codecov.

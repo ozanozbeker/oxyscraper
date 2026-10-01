@@ -10,6 +10,7 @@ from oxyscraper._payloads import (
     ParsingFunction,
     ParsingInstructions,
     Payload,
+    Universal,
 )
 from oxyscraper._sessions import (
     AsyncRun,
@@ -42,6 +43,7 @@ __all__ = [
     "Result",
     "Run",
     "Session",
+    "Universal",
     "Upload",
     "dry_run",
 ]

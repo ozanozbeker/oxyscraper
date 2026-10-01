@@ -54,7 +54,7 @@ _INPUT_KEYS = (
 )
 _CREDENTIALS = re.compile(r"(?<=://)[^/?#@\s\"']+(?=@)")
 
-_UserAgentType = Literal[
+_Device = Literal[
     "desktop",
     "mobile",
     "mobile_android",
@@ -62,6 +62,9 @@ _UserAgentType = Literal[
     "tablet",
     "tablet_android",
     "tablet_ios",
+]
+_UserAgentType = Literal[
+    _Device,
     "desktop_chrome",
     "desktop_edge",
     "desktop_firefox",
@@ -854,6 +857,108 @@ class AmazonSellers(_Amazon):
     query: str
 
 
+class _Cookie(TypedDict):
+    key: str
+    value: str
+
+
+class Universal(Payload):
+    """A `universal` job, which scrapes any URL.
+
+    The model takes no `domain`, `locale`, `start_page`, `pages` or `limit`, because no docs page names them for `universal`.
+    `extra` passes them.
+    [What a live test shows about `universal` and the instruction parameters](https://github.com/ozanozbeker/oxyscraper/blob/main/docs/research/live-universal.md) records the run that checked it.
+
+    Attributes
+    ----------
+    url
+        The page to scrape.
+        A page with an empty body faults the job, whatever its status.
+    geo_location
+        A country name or an ISO 3166-1 alpha-2 code, such as `Germany` or `DE`.
+        The API accepts any string, and a value it does not know, such as `de`, has no effect and still bills.
+    user_agent_type
+        The device of the job's user agent.
+        A `desktop_*` value raises, because it draws from the same agents as `desktop`.
+    force_headers
+        Sends `headers` to the site.
+    force_cookies
+        Sends `cookies` to the site.
+    successful_status_codes
+        More status codes that end the job `done`, such as 503.
+        The API rejects a 3xx code for free.
+    follow_redirects
+        `False` faults a job whose page redirects.
+        A chain of more than 10 redirects faults the job either way.
+    cookies
+        The cookies that the site receives.
+        They raise without `force_cookies`, because the site then receives none and the job still bills.
+    headers
+        The headers that the site receives.
+        They raise without `force_headers`, because the site then receives none and the job still bills.
+        A `User-Agent` header never replaces Oxylabs' own.
+    session_id
+        Jobs that share an ID share an exit IP, for 100 jobs or 25 minutes after the first.
+    http_method
+        `post` sends `content` as the request body.
+    content
+        The request body in Base64, which the API rejects for free in any other encoding.
+    store_id
+        A Home Depot store ID.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    _CONTEXT: ClassVar[tuple[str, ...]] = (
+        "force_headers",
+        "force_cookies",
+        "successful_status_codes",
+        "follow_redirects",
+        "cookies",
+        "headers",
+        "session_id",
+        "http_method",
+        "content",
+        "store_id",
+    )
+
+    query: ClassVar[None]  # pyrefly: ignore[bad-override]
+    product_id: ClassVar[None]  # pyrefly: ignore[bad-override]
+    prompt: ClassVar[None]  # pyrefly: ignore[bad-override]
+    video_id: ClassVar[None]  # pyrefly: ignore[bad-override]
+    channel_handle: ClassVar[None]  # pyrefly: ignore[bad-override]
+    category_id: ClassVar[None]  # pyrefly: ignore[bad-override]
+    start_page: ClassVar[None]  # pyrefly: ignore[bad-override]
+    pages: ClassVar[None]  # pyrefly: ignore[bad-override]
+    limit: ClassVar[None]  # pyrefly: ignore[bad-override]
+    domain: ClassVar[None]  # pyrefly: ignore[bad-override]
+    locale: ClassVar[None]  # pyrefly: ignore[bad-override]
+
+    source: Literal["universal"] = "universal"
+    url: str
+    user_agent_type: _Device | None = None
+    force_headers: bool | None = None
+    force_cookies: bool | None = None
+    successful_status_codes: list[int] | None = None
+    follow_redirects: bool | None = None
+    cookies: list[_Cookie] | None = None
+    headers: dict[str, str] | None = None
+    session_id: str | None = None
+    http_method: Literal["get", "post", "options"] | None = None
+    content: str | None = None
+    store_id: str | None = None
+
+    @override
+    def model_post_init(self, context: Any, /) -> None:
+        super().model_post_init(context)
+        context = {
+            item["key"]: item["value"] for item in self.model_dump().get("context", ())
+        }
+        for key in ("headers", "cookies"):
+            if context.get(key) and context.get(f"force_{key}") is not True:
+                msg = f"{key} needs force_{key}, because without it the site receives no {key} and the job still bills"
+                raise ValueError(msg)
+
+
 SOURCES: tuple[type[Payload], ...] = (
     Amazon,
     AmazonBestsellers,
@@ -861,6 +966,7 @@ SOURCES: tuple[type[Payload], ...] = (
     AmazonProduct,
     AmazonSearch,
     AmazonSellers,
+    Universal,
 )
 """The source models that a billed run has checked; every other source runs through `Payload`."""
 

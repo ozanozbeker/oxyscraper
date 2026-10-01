@@ -1,4 +1,4 @@
-"""`Payload`, `SOURCES` and the instruction types, which validate, serialize and redact one job's body and send nothing.
+"""`Payload`, the source models, `SOURCES` and the instruction types, which validate, serialize and redact one job's body and send nothing.
 
 `_sessions` builds the dry run from them.
 A model validator on a subclass runs outside `Payload`'s scrubbing wrap validator, so a subclass checks fields together in `model_post_init` instead.
@@ -11,12 +11,14 @@ from typing import (
     TYPE_CHECKING,
     Annotated,
     Any,
+    ClassVar,
     Literal,
     NotRequired,
     Required,
     Self,
     TypeVar,
 )
+from urllib.parse import urlsplit
 
 from pydantic import (
     AfterValidator,
@@ -377,6 +379,8 @@ class Payload(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow", frozen=True)
+    # The fields that a model sends as `context` items.
+    _CONTEXT: ClassVar[tuple[str, ...]] = ()
 
     source: str
     query: str | None = None
@@ -475,13 +479,17 @@ class Payload(BaseModel):
 
     @model_serializer
     def _body(self) -> dict[str, Any]:
-        body = {
-            name: value
-            for name, value in self
-            if value is not None and name not in {"context", "extra"}
-        }
-        extra = dict(self.extra)
-        if context := [*(self.context or ()), *extra.pop("context", ())]:
+        body = {name: value for name, value in self if value is not None}
+        extra = dict(body.pop("extra"))
+        if context := [
+            *(
+                {"key": key, "value": body.pop(key)}
+                for key in self._CONTEXT
+                if key in body
+            ),
+            *body.pop("context", ()),
+            *extra.pop("context", ()),
+        ]:
             body["context"] = context
         return body | extra
 
@@ -503,7 +511,357 @@ class Payload(BaseModel):
             raise _scrubbed(error, "json") from None
 
 
-SOURCES: tuple[type[Payload], ...] = ()
+_AmazonDomain = Literal[
+    "ae", "ca", "cn", "co.jp", "co.uk", "com", "com.au", "com.be", "com.br", "com.mx",
+    "com.tr", "de", "eg", "es", "fr", "ie", "in", "it", "nl", "pl", "sa", "se", "sg",
+    "co.za",
+]  # fmt: skip
+_AmazonCurrency = Literal[
+    "AED", "AMD", "ARS", "AUD", "AWG", "AZN", "BBD", "BGN", "BHD", "BMD", "BND", "BOB",
+    "BRL", "BSD", "BZD", "CAD", "CHF", "CLP", "CNY", "COP", "CRC", "CZK", "DKK", "DOP",
+    "EGP", "EUR", "GBP", "GHS", "GTQ", "HKD", "HNL", "HUF", "IDR", "ILS", "INR", "JMD",
+    "JOD", "JPY", "KES", "KHR", "KRW", "KWD", "KYD", "KZT", "LBP", "LKR", "MAD", "MNT",
+    "MOP", "MUR", "MXN", "MYR", "NAD", "NGN", "NOK", "NZD", "OMR", "PAB", "PEN", "PHP",
+    "PKR", "PLN", "PYG", "QAR", "RON", "RUB", "SAR", "SEK", "SGD", "THB", "TRY", "TTD",
+    "TWD", "TZS", "USD", "UYU", "VND", "XCD", "ZAR",
+]  # fmt: skip
+_AmazonLocale = Literal[
+    "ar_AE", "bn_IN", "cs_CZ", "da_DK", "de_DE", "de_US", "en_AE", "en_AU", "en_CA", "en_GB",
+    "en_IE", "en_IN", "en_SG", "en_US", "en_ZA", "es_ES", "es_MX", "es_US", "fr_BE", "fr_CA",
+    "fr_FR", "he_IL", "hi_IN", "it_IT", "ja_JP", "kn_IN", "ko_KR", "ml_IN", "mr_IN", "nl_BE",
+    "nl_NL", "pl_PL", "pt_BR", "pt_PT", "sv_SE", "ta_IN", "te_IN", "tr_TR", "zh_CN", "zh_TW",
+]  # fmt: skip
+
+
+class _Amazon(Payload):
+    """The fields and checks that the six Amazon models share."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # A `ClassVar` annotation drops the field that `Payload` declares, so the keyword raises as unknown.
+    product_id: ClassVar[None]  # pyrefly: ignore[bad-override]
+    prompt: ClassVar[None]  # pyrefly: ignore[bad-override]
+    video_id: ClassVar[None]  # pyrefly: ignore[bad-override]
+    channel_handle: ClassVar[None]  # pyrefly: ignore[bad-override]
+    limit: ClassVar[None]  # pyrefly: ignore[bad-override]
+
+    domain: _AmazonDomain | None = None
+    locale: _AmazonLocale | None = None
+
+    @override
+    def model_post_init(self, context: Any, /) -> None:
+        super().model_post_init(context)
+        body = self.model_dump()
+        if body.get("render") and "user_agent_type" in body:
+            msg = "user_agent_type has no effect with render, because a rendered Amazon job ignores it and still bills"
+            raise ValueError(msg)
+        context = {item["key"]: item["value"] for item in body.get("context", ())}
+        currency = context.get("currency", "USD")
+        geo_location = body.get("geo_location")
+        if (
+            currency != "USD"
+            and self._domain(body) == "com"
+            and not (
+                isinstance(geo_location, str) and re.fullmatch("[A-Z]{2}", geo_location)
+            )
+        ):
+            msg = f"currency {currency} on com needs a 2-letter country code in geo_location, because the API bills prices in USD without one"
+            raise ValueError(msg)
+
+    def _domain(self, body: dict[str, Any]) -> object:
+        """Return the domain that the API checks the body against."""
+        return body.get("domain", "com")
+
+
+class Amazon(_Amazon):
+    """An `amazon` job, which scrapes an Amazon URL.
+
+    The API runs a product URL as an `amazon_product` job and a search URL as an `amazon_search` job, and appends `language=<locale>` to every URL.
+    A Best Sellers URL may render and bill as a rendered result.
+    The model takes no `domain`, because the URL's host sets it, and no `start_page` or `pages`, because the API bills them with no effect.
+    [What a live test shows about the Amazon models](https://github.com/ozanozbeker/oxyscraper/blob/main/docs/research/live-amazon.md) records the run that checked it.
+
+    Attributes
+    ----------
+    url
+        An Amazon URL.
+        The API rejects a URL outside Amazon for free, and rejects `parse=True` for free on a page type without a dedicated parser.
+    locale
+        The page's language, which the API rejects for free unless the host lists it.
+        Without it, `amazon.ae` returns its Arabic page.
+    geo_location
+        A postal code inside the host's country, or an ISO 3166-1 alpha-2 code outside it, which the API rejects for free if it does not fit.
+        `ae`, `com.be`, `eg`, `ie`, `pl`, `sa`, `se` and `sg` run no check, so a wrong value may bill.
+        `99999` on `com` faults after 120 seconds.
+    currency
+        The currency of the prices, which the API rejects for free unless the host lists it.
+        On `amazon.com`, any currency but USD raises without a 2-letter country code in `geo_location`, because the API bills prices in USD then.
+    user_agent_type
+        It raises with `render`, because a rendered job ignores it and still bills.
+    """
+
+    _CONTEXT: ClassVar[tuple[str, ...]] = ("currency",)
+
+    query: ClassVar[None]  # pyrefly: ignore[bad-override]
+    category_id: ClassVar[None]  # pyrefly: ignore[bad-override]
+    domain: ClassVar[None]  # pyrefly: ignore[bad-override]
+    start_page: ClassVar[None]  # pyrefly: ignore[bad-override]
+    pages: ClassVar[None]  # pyrefly: ignore[bad-override]
+
+    source: Literal["amazon"] = "amazon"
+    url: str
+    currency: _AmazonCurrency | None = None
+
+    @override
+    def _domain(self, body: dict[str, Any]) -> object:
+        # The API reads the domain from the URL's host, and drops a `domain` sent beside it.
+        return (urlsplit(self.url).hostname or "").partition("amazon.")[2]
+
+
+class AmazonBestsellers(_Amazon):
+    """An `amazon_bestsellers` job, which scrapes the Best Sellers page of one browse node.
+
+    The API renders every job, and bills each result as rendered, although it takes nothing from the rendered limit.
+    `render=""` turns forced rendering off, and the job then faults.
+    The model takes no `user_agent_type`, because rendering ignores it.
+    [What a live test shows about the Amazon models](https://github.com/ozanozbeker/oxyscraper/blob/main/docs/research/live-amazon.md) records the run that checked it.
+
+    Attributes
+    ----------
+    query
+        A browse node ID, such as `172541`.
+        Any other value raises, because the API bills a rendered "Best undefined" page for it.
+        An unknown node ID bills that page too.
+    domain
+        The marketplace, `com` by default.
+        `co.za` works, although no docs page lists it, and every `cn` job faulted.
+    locale
+        The page's language, which the API rejects for free unless the domain lists it.
+        Without it, `ae` returns its Arabic page.
+    geo_location
+        A postal code inside the domain's country, or an ISO 3166-1 alpha-2 code outside it, which the API rejects for free if it does not fit.
+        `ae`, `com.be`, `eg`, `ie`, `pl`, `sa`, `se` and `sg` run no check, so a wrong value may bill.
+        `99999` on `com` faults after 120 seconds.
+    start_page
+        A page past the last faults.
+    pages
+        The API rejects more than 20 for free.
+    currency
+        The currency of the prices, which the API rejects for free unless the domain lists it.
+        On `com`, any currency but USD raises without a 2-letter country code in `geo_location`, because the API bills prices in USD then.
+    """
+
+    _CONTEXT: ClassVar[tuple[str, ...]] = ("currency",)
+
+    url: ClassVar[None]  # pyrefly: ignore[bad-override]
+    category_id: ClassVar[None]  # pyrefly: ignore[bad-override]
+    user_agent_type: ClassVar[None]  # pyrefly: ignore[bad-override]
+
+    source: Literal["amazon_bestsellers"] = "amazon_bestsellers"
+    query: Annotated[str, Field(pattern=r"^[0-9]+$")]
+    currency: _AmazonCurrency | None = None
+
+
+class AmazonPricing(_Amazon):
+    """An `amazon_pricing` job, which scrapes the offers of one product.
+
+    The model takes no `currency`, because the API bills it with no effect.
+    [What a live test shows about the Amazon models](https://github.com/ozanozbeker/oxyscraper/blob/main/docs/research/live-amazon.md) records the run that checked it.
+
+    Attributes
+    ----------
+    query
+        An ASIN.
+        One longer than 10 characters raises, because the API bills a 404 page for it.
+        The API rejects a shorter one, or one with lowercase letters, for free, and bills a 404 page for one that does not exist.
+    domain
+        The marketplace, `com` by default.
+        `co.za` works, although no docs page lists it, and every `cn` job faulted.
+    locale
+        The page's language, which the API rejects for free unless the domain lists it.
+        Without it, `ae` returns its Arabic page.
+    geo_location
+        A postal code inside the domain's country, or an ISO 3166-1 alpha-2 code outside it, which the API rejects for free if it does not fit.
+        `ae`, `com.be`, `eg`, `ie`, `pl`, `sa`, `se` and `sg` run no check, so a wrong value may bill.
+        `99999` on `com` faults after 120 seconds.
+    start_page
+        A page past the last bills.
+    pages
+        The API rejects more than 20 for free.
+    user_agent_type
+        It raises with `render`, because a rendered job ignores it and still bills.
+    """
+
+    url: ClassVar[None]  # pyrefly: ignore[bad-override]
+    category_id: ClassVar[None]  # pyrefly: ignore[bad-override]
+
+    source: Literal["amazon_pricing"] = "amazon_pricing"
+    query: Annotated[str, Field(max_length=10)]
+
+
+class AmazonProduct(_Amazon):
+    """An `amazon_product` job, which scrapes one product page.
+
+    The model takes no `start_page` or `pages`, because the API bills them with no effect.
+    [What a live test shows about the Amazon models](https://github.com/ozanozbeker/oxyscraper/blob/main/docs/research/live-amazon.md) records the run that checked it.
+
+    Attributes
+    ----------
+    query
+        An ASIN.
+        One longer than 10 characters raises, because the API bills a 404 page for it.
+        The API rejects a shorter one, or one with lowercase letters, for free, and bills a 404 page for one that does not exist.
+    domain
+        The marketplace, `com` by default.
+        `co.za` works, although no docs page lists it, and every `cn` job faulted.
+    locale
+        The page's language, which the API rejects for free unless the domain lists it.
+        Without it, `ae` returns its Arabic page.
+    geo_location
+        A postal code inside the domain's country, or an ISO 3166-1 alpha-2 code outside it, which the API rejects for free if it does not fit.
+        `ae`, `com.be`, `eg`, `ie`, `pl`, `sa`, `se` and `sg` run no check, so a wrong value may bill.
+        `99999` on `com` faults after 120 seconds.
+    user_agent_type
+        It raises with `render`, because a rendered job ignores it and still bills.
+    autoselect_variant
+        Adds `th=1&psc=1` to the product URL, so the page shows a variant's price and buybox.
+    currency
+        The currency of the prices, which the API rejects for free unless the domain lists it.
+        On `com`, any currency but USD raises without a 2-letter country code in `geo_location`, because the API bills prices in USD then.
+    """
+
+    _CONTEXT: ClassVar[tuple[str, ...]] = ("autoselect_variant", "currency")
+
+    url: ClassVar[None]  # pyrefly: ignore[bad-override]
+    category_id: ClassVar[None]  # pyrefly: ignore[bad-override]
+    start_page: ClassVar[None]  # pyrefly: ignore[bad-override]
+    pages: ClassVar[None]  # pyrefly: ignore[bad-override]
+
+    source: Literal["amazon_product"] = "amazon_product"
+    query: Annotated[str, Field(max_length=10)]
+    autoselect_variant: bool | None = None
+    currency: _AmazonCurrency | None = None
+
+
+class AmazonSearch(_Amazon):
+    """An `amazon_search` job, which scrapes the results of one search.
+
+    [What a live test shows about the Amazon models](https://github.com/ozanozbeker/oxyscraper/blob/main/docs/research/live-amazon.md) records the run that checked it.
+
+    Attributes
+    ----------
+    query
+        The search term.
+    domain
+        The marketplace, `com` by default.
+        `co.za` works, although no docs page lists it, and every `cn` job faulted.
+    locale
+        The page's language, which the API rejects for free unless the domain lists it.
+        Without it, `ae` returns its Arabic page.
+    geo_location
+        A postal code inside the domain's country, or an ISO 3166-1 alpha-2 code outside it, which the API rejects for free if it does not fit.
+        `ae`, `com.be`, `eg`, `ie`, `pl`, `sa`, `se` and `sg` run no check, so a wrong value may bill.
+        `99999` on `com` faults after 120 seconds.
+    start_page
+        A page past the last bills.
+    pages
+        The API rejects more than 20 for free.
+    user_agent_type
+        It raises with `render`, because a rendered job ignores it and still bills.
+    currency
+        The currency of the prices, which the API rejects for free unless the domain lists it.
+        On `com`, any currency but USD raises without a 2-letter country code in `geo_location`, because the API bills prices in USD then.
+    sort_by
+        The order of the results.
+    refinements
+        Amazon refinement codes, such as `p_123:256097`.
+    min_price
+        The lowest price, in cents, so `5000` means 50.00.
+        It raises for 0, because the API then applies no filter and still bills.
+        The API rejects a `min_price` above `max_price` for free.
+    max_price
+        The highest price, in cents.
+    category_id
+        A browse node ID that limits the search, sent as a `context` item rather than as the input key of `target_category`.
+    merchant_id
+        A seller ID that limits the search.
+    """
+
+    _CONTEXT: ClassVar[tuple[str, ...]] = (
+        "currency",
+        "sort_by",
+        "refinements",
+        "min_price",
+        "max_price",
+        "category_id",
+        "merchant_id",
+    )
+
+    url: ClassVar[None]  # pyrefly: ignore[bad-override]
+
+    source: Literal["amazon_search"] = "amazon_search"
+    query: str
+    currency: _AmazonCurrency | None = None
+    sort_by: (
+        Literal[
+            "most_recent",
+            "price_low_to_high",
+            "price_high_to_low",
+            "featured",
+            "average_review",
+            "bestsellers",
+        ]
+        | None
+    ) = None
+    refinements: list[str] | None = None
+    min_price: PositiveInt | None = None
+    max_price: PositiveInt | None = None
+    category_id: str | None = None
+    merchant_id: str | None = None
+
+
+class AmazonSellers(_Amazon):
+    """An `amazon_sellers` job, which scrapes one seller's page.
+
+    The model takes no `start_page` or `pages`, because the API bills them with no effect.
+    [What a live test shows about the Amazon models](https://github.com/ozanozbeker/oxyscraper/blob/main/docs/research/live-amazon.md) records the run that checked it.
+
+    Attributes
+    ----------
+    query
+        A seller ID, such as `A2OL0VKAHK1LYK`.
+        The API bills a 404 page for one that does not exist.
+    domain
+        The marketplace, `com` by default.
+        `co.za` works, although no docs page lists it, and every `cn` job faulted.
+    locale
+        The page's language, which the API rejects for free unless the domain lists it.
+        Without it, `ae` returns its Arabic page.
+    geo_location
+        A postal code inside the domain's country, or an ISO 3166-1 alpha-2 code outside it, which the API rejects for free if it does not fit.
+        `ae`, `com.be`, `eg`, `ie`, `pl`, `sa`, `se` and `sg` run no check, so a wrong value may bill.
+        `99999` on `com` faults after 120 seconds.
+    user_agent_type
+        It raises with `render`, because a rendered job ignores it and still bills.
+    """
+
+    url: ClassVar[None]  # pyrefly: ignore[bad-override]
+    category_id: ClassVar[None]  # pyrefly: ignore[bad-override]
+    start_page: ClassVar[None]  # pyrefly: ignore[bad-override]
+    pages: ClassVar[None]  # pyrefly: ignore[bad-override]
+
+    source: Literal["amazon_sellers"] = "amazon_sellers"
+    query: str
+
+
+SOURCES: tuple[type[Payload], ...] = (
+    Amazon,
+    AmazonBestsellers,
+    AmazonPricing,
+    AmazonProduct,
+    AmazonSearch,
+    AmazonSellers,
+)
 """The source models that a billed run has checked; every other source runs through `Payload`."""
 
 

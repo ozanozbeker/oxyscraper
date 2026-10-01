@@ -4,7 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 import oxyscraper as oxy
 from oxyscraper.testing import FakeOxylabs
@@ -236,6 +236,35 @@ def test_errors_redact_any_input(call: Callable[[], object]) -> None:
     with pytest.raises(ValidationError) as caught:
         call()
     assert "s3cr3t" not in "".join(traceback.format_exception(caught.value))
+    assert "redacted:redacted" in repr(caught.value.errors())
+
+
+class Job(BaseModel):
+    payload: oxy.Payload
+
+
+COLLIDING_UPLOADS = {
+    "source": "universal",
+    "url": "https://example.com",
+    "storage_type": "s3_compatible",
+    "storage_url": STORAGE_URL.replace("folder", "{{ source }}.{{ extension }}"),
+}
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: TypeAdapter(oxy.Payload).validate_json(json.dumps(COLLIDING_UPLOADS)),
+        lambda: TypeAdapter(list[oxy.Payload]).validate_python([COLLIDING_UPLOADS]),
+        lambda: Job.model_validate_json(json.dumps({"payload": COLLIDING_UPLOADS})),
+    ],
+)
+def test_errors_redact_inside_caller_types(call: Callable[[], object]) -> None:
+    """A payload that fails inside a caller's `TypeAdapter` or model hides the credentials."""
+    with pytest.raises(ValidationError, match="job_id") as caught:
+        call()
+    assert "s3cr3t" not in "".join(traceback.format_exception(caught.value))
+    assert "s3cr3t" not in caught.value.json()
     assert "redacted:redacted" in repr(caught.value.errors())
 
 

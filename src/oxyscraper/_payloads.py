@@ -362,6 +362,8 @@ class Payload(BaseModel):
         The bucket path that Cloud Storage uploads to.
         A path that ends in `.{{ extension }}` names each job's object, so it raises without `{{ job_id }}`: jobs that share a name lose their uploads and still bill.
         `repr`, validation errors and `dry_run` show its credentials as `redacted:redacted`, as the API does.
+        A document that is not valid JSON fails before any `Payload` code runs, so only `Payload.model_validate_json` redacts that error.
+        A caller's `TypeAdapter` or model that holds a `Payload` keeps the whole document in `errors()` and `json()`, credentials included.
     parsing_instructions
         The instructions of a custom parser, which need `parse`.
         A wrong `_args` shape, or a regex that Python's `re` cannot compile, raises, because the API bills it with a null field.

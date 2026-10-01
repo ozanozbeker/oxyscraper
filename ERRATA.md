@@ -5,6 +5,7 @@ GitBook exports the docs to `oxylabs/gitbook-public-english`, which is private, 
 Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the parameter and retention entries, and links the test behind it.
 The two entries on storage endpoints, the entry on a 400's `errors` list, the entries from the `universal` and Amazon runs and the entry on LLM sources through Realtime cite the pages as published on 2026-09-29.
 The entries on `pages` limits, on a job larger than a rate limit and from the job object run cite the pages as published on 2026-09-30.
+The entries from the input check run cite the pages as published on 2026-10-01.
 
 ## Statements the API contradicts
 
@@ -251,6 +252,20 @@ The entries on `pages` limits, on a job larger than a rate limit and from the jo
   `lowes_search` ran with `is_render_forced: true`, and Usage Statistics counted it as rendered.
 - **Evidence:** [Forced rendering](docs/research/live-job-objects.md#forced-rendering).
 
+### Walmart Search: `query` is optional
+
+- **Docs:** [Walmart Search][walmart-search] marks `query` as mandatory.
+- **API:** a `walmart_search` job without `query` returned 202, fetched `https://www.walmart.com/all-departments` and billed, through Push-Pull and Realtime.
+  An empty `query` returned 400.
+- **Evidence:** [Input checks](docs/research/live-parameters.md#input-checks).
+
+### ChatGPT: `query` works in place of `prompt`
+
+- **Docs:** [ChatGPT][chatgpt] marks `prompt` as mandatory, and names no `query` parameter.
+- **API:** a `chatgpt` job with `query` and no `prompt` returned 202 and billed.
+  Without either, the 400 says `Query parameter is empty.`
+- **Evidence:** [Input checks](docs/research/live-parameters.md#input-checks).
+
 ## Behaviour the docs leave out
 
 ### Response Codes: Realtime returns 408 past its TTL
@@ -388,10 +403,10 @@ The entries on `pages` limits, on a job larger than a rate limit and from the jo
 
 - **Docs:** [Response Codes][response-codes] says a 400's body "has a more specific error message", and does not give its shape.
 - **API:** most 400s carried a `message` string.
-  `walmart_product` with a missing or unknown key returned an `errors` list of strings and no `message`, such as `["[product_id]: This field is missing.", "[query]: This field was not expected."]`.
+  The 97 sources that take no batch returned an `errors` list of strings and no `message` for a missing, empty or unexpected key, such as `["[product_id]: This field is missing.", "[query]: This field was not expected."]`.
   A mistake in `parsing_instructions` returned an `errors` list of objects with `_fn`, `_fn_idx`, `_msg` and `_path`.
   A mistake in `browser_instructions` returned an `errors` object with a `message`, and for a failed check the `instruction` and pydantic's `validation_errors`.
-- **Evidence:** [Probes on 2026-09-29](docs/research/live-parameters.md#probes-on-2026-09-29), [Mistakes the API returns 400 for](docs/research/live-universal.md#mistakes-the-api-returns-400-for) and [Checks at submission](docs/research/live-universal.md#checks-at-submission).
+- **Evidence:** [Probes on 2026-09-29](docs/research/live-parameters.md#probes-on-2026-09-29), [Input checks](docs/research/live-parameters.md#input-checks), [Mistakes the API returns 400 for](docs/research/live-universal.md#mistakes-the-api-returns-400-for) and [Checks at submission](docs/research/live-universal.md#checks-at-submission).
 
 ### Rate Limits: a batch over the rendered limit returns 429 as a whole
 
@@ -641,6 +656,13 @@ The entries on `pages` limits, on a job larger than a rate limit and from the jo
 - **API:** all 35 took a Push-Pull job on 2026-09-30.
 - **Evidence:** [Docs changes since the catalog](docs/research/live-job-objects.md#docs-changes-since-the-catalog).
 
+### Target Product and Target Category: the input has a format check
+
+- **Docs:** [Target Product][target-product] and [Target Category][target-category] give no format for `product_id` or `category_id`.
+- **API:** `target_product` returned 400 with `[product_id]: Must be 8 or 10 digits.` for any other `product_id`.
+  `target_category` returned 400 with `[category_id]: Must be 5+ characters.` for a shorter `category_id`.
+- **Evidence:** [Input checks](docs/research/live-parameters.md#input-checks).
+
 [response-codes]: https://developers.oxylabs.io/products/web-scraper-api/response-codes
 [help-response-codes]: https://developers.oxylabs.io/help-center/troubleshooting/response-codes-for-web-scraper-api
 [job-id]: https://developers.oxylabs.io/help-center/troubleshooting/where-can-i-find-my-scraping-job-id
@@ -681,3 +703,7 @@ The entries on `pages` limits, on a job larger than a rate limit and from the jo
 [g-shopping-search]: https://developers.oxylabs.io/api-targets/search-engines/google/shopping/shopping-search
 [bing-search]: https://developers.oxylabs.io/api-targets/search-engines/bing/search
 [llms]: https://developers.oxylabs.io/llms.txt
+[walmart-search]: https://developers.oxylabs.io/api-targets/e-commerce/walmart/search
+[chatgpt]: https://developers.oxylabs.io/api-targets/llms-and-ai/chatgpt
+[target-product]: https://developers.oxylabs.io/api-targets/e-commerce/target/product
+[target-category]: https://developers.oxylabs.io/api-targets/e-commerce/target/category

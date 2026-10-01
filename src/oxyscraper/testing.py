@@ -13,7 +13,7 @@ import itertools
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, Self, get_args
 
@@ -311,6 +311,27 @@ _SOURCES = frozenset(_CONTEXT) | {
 }
 # The 26 sources that took a batch on 2026-09-28 are the LLM sources and those with a full job object (docs/research/live-parameters.md).
 _BATCH_SOURCES = _LLM_SOURCES | frozenset(_CONTEXT)
+# The names of the 97 other sources give their input keys, except these three (docs/research/live-parameters.md#input-checks).
+_NAMED_KEYS = {
+    "target_category": "category_id",
+    "youtube_channel": "channel_handle",
+    "youtube_video_trainability": "video_id",
+}
+_REQUIRED_DOMAIN = frozenset(
+    {"grainger_product", "grainger_search", "mercadolibre_product"}
+)
+# `walmart_search` without `query` fetches walmart.com/all-departments.
+_OPTIONAL_INPUT = frozenset({"walmart_search"})
+_FORMATS = {
+    "target_category": (re.compile(r".{5,}", re.DOTALL), "Must be 5+ characters."),
+    "target_product": (re.compile(r"\d{8}|\d{10}"), "Must be 8 or 10 digits."),
+    "tiktok_shop_product": (
+        re.compile(r"\d{19}"),
+        "Must be 19 digits for product_id.",
+    ),
+}
+# Of the 97, these return results without the target's request and response.
+_BARE_RESULTS = frozenset({"youtube_channel", "youtube_search", "youtube_search_max"})
 # A 1x1 PNG, so an image library opens the default `png` content.
 _PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAAABJRU5ErkJggg=="
 # The API returned this page with a 500, so every 5xx returns it.
@@ -386,6 +407,13 @@ class Rejected:
 
     message: str
     status_code: int = 400
+
+
+@dataclass(frozen=True)
+class _Invalid(Rejected):
+    """The 400 of a source that takes no batch, which lists each failed field under `errors`."""
+
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -563,7 +591,7 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
     def _submit(self, request: httpx2.Request, body: dict[str, Any]) -> httpx2.Response:
         decision = self._decide(body)
         if isinstance(decision, Rejected):
-            return self._error(request, decision.status_code, decision.message)
+            return self._reject(request, decision)
         rendered = _rendered(body)
         if limit := self._take(_pages(body), rendered=rendered):
             return self._too_many(request, limit, rendered=rendered)
@@ -626,15 +654,9 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
     async def _realtime(
         self, request: httpx2.Request, body: dict[str, Any]
     ) -> httpx2.Response:
-        if body.get("source") in _LLM_SOURCES:
-            message = "Realtime integration is not supported for LLM sources. Please use Push-Pull."
-            return self._error(request, 422, message)
-        if "storage_url" in body or "storage_type" in body:
-            message = "Parameter `storage_url` cannot be used with realtime."
-            return self._error(request, 400, message)
-        decision = self._decide(body)
+        decision = self._decide(body, realtime=True)
         if isinstance(decision, Rejected):
-            return self._error(request, decision.status_code, decision.message)
+            return self._reject(request, decision)
         rendered = _rendered(body)
         if limit := self._take(_pages(body), rendered=rendered):
             return self._too_many(request, limit, rendered=rendered)
@@ -676,9 +698,14 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
         }
         return httpx2.Response(200, json=answer, headers=headers)
 
-    def _decide(self, payload: dict[str, Any]) -> Outcome | Rejected:
+    def _decide(
+        self, payload: dict[str, Any], *, realtime: bool = False
+    ) -> Outcome | Rejected:
         """Apply the API's free checks, then the test's outcome."""
-        if rejected := _check(payload):
+        rejected = _check(payload)
+        if rejected is None and realtime:
+            rejected = _realtime_error(payload)
+        if rejected:
             return rejected
         if isinstance(self._outcome, Outcome):
             return self._outcome
@@ -889,7 +916,10 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
         }
         if kind == "parsed":
             entry |= {"parser_type": "", "parser_preset": None}
-        if job.payload["source"] == "universal":
+        source = job.payload["source"]
+        if source == "universal" or (
+            source not in _BATCH_SOURCES and source not in _BARE_RESULTS
+        ):
             faulted = job.outcome.status == "faulted"
             sent: list[Any] | None = None if faulted else []
             headers = None if faulted else {"User-Agent": "Mozilla/5.0"}
@@ -939,12 +969,18 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
         headers = self._limit_headers(rendered=rendered)
         return self._error(request, 429, _LIMIT_MESSAGES[limit], headers=headers)
 
+    def _reject(self, request: httpx2.Request, rejected: Rejected) -> httpx2.Response:
+        if isinstance(rejected, _Invalid):
+            return self._error(request, rejected.status_code, errors=rejected.errors)
+        return self._error(request, rejected.status_code, rejected.message)
+
     def _error(
         self,
         request: httpx2.Request,
         status_code: int,
         message: str | None = None,
         *,
+        errors: list[str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> httpx2.Response:
         if status_code >= httpx2.codes.INTERNAL_SERVER_ERROR:
@@ -959,8 +995,7 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
                 if status_code == httpx2.codes.TOO_MANY_REQUESTS
                 else httpx2.codes.get_reason_phrase(status_code)
             )
-        body = {
-            "message": message,
+        body = ({"errors": errors} if errors else {"message": message}) | {
             "instance": request.url.path,
             "timestamp": f"{_EPOCH + timedelta(seconds=self._now()):%Y-%m-%dT%H:%M:%S.%f}000Z",
             "trace_id": self._trace_id(),
@@ -993,13 +1028,55 @@ def _check(payload: dict[str, Any]) -> Rejected | None:
     source = payload.get("source")
     if source not in _SOURCES:
         return Rejected("Unsupported source.")
+    if source not in _BATCH_SOURCES and (errors := _field_errors(source, payload)):
+        return _Invalid("", errors=errors)
     if rejected := _pages_error(source, payload.get("pages", 1)):
         return rejected
-    if not any(payload.get(key) for key in _INPUT_KEYS):
+    keys = ("prompt", "query") if source in _LLM_SOURCES else _INPUT_KEYS
+    if source in _BATCH_SOURCES and not any(payload.get(key) for key in keys):
         if source in _URL_SOURCES:
             return Rejected("Parameter `url` is empty.")
         return Rejected("Query parameter is empty.")
     return _url_error(payload.get("url"))
+
+
+def _field_errors(source: str, payload: dict[str, Any]) -> list[str]:
+    """Return the `errors` list of a source that takes no batch, sorted as the API sorts it."""
+    key = _input_key(source)
+    errors = [
+        f"[{other}]: This field was not expected."
+        for other in _INPUT_KEYS
+        if other != key and other in payload
+    ]
+    if source in _REQUIRED_DOMAIN and "domain" not in payload:
+        errors.append("[domain]: This field is missing.")
+    value = payload.get(key)
+    if key not in payload and source not in _OPTIONAL_INPUT:
+        errors.append(f"[{key}]: This field is missing.")
+    elif key in payload and not value:
+        errors.append(f"[{key}]: This value should not be blank.")
+    if source in _FORMATS and isinstance(value, str):
+        pattern, message = _FORMATS[source]
+        if not pattern.fullmatch(value):
+            errors.append(f"[{key}]: {message}")
+    return sorted(errors)
+
+
+def _input_key(source: str) -> str:
+    if source in _NAMED_KEYS:
+        return _NAMED_KEYS[source]
+    if source.endswith("_product"):
+        return "product_id"
+    return "query" if "_" in source else "url"
+
+
+def _realtime_error(payload: dict[str, Any]) -> Rejected | None:
+    if payload["source"] in _LLM_SOURCES:
+        message = "Realtime integration is not supported for LLM sources. Please use Push-Pull."
+        return Rejected(message, status_code=422)
+    if "storage_url" in payload or "storage_type" in payload:
+        return Rejected("Parameter `storage_url` cannot be used with realtime.")
+    return None
 
 
 def _pages_error(source: str, pages: object) -> Rejected | None:
@@ -1040,7 +1117,7 @@ def _pages(payload: dict[str, Any]) -> int:
 
 
 def _input(payload: dict[str, Any]) -> str:
-    return next(str(payload[key]) for key in _INPUT_KEYS if payload.get(key))
+    return next((str(payload[key]) for key in _INPUT_KEYS if payload.get(key)), "")
 
 
 def _default_type(payload: dict[str, Any]) -> _OutputType:

@@ -127,18 +127,26 @@ async def test_every_source(fake: FakeOxylabs) -> None:
     )
     sources = dict(rows)
 
-    def value(key: str) -> str:
-        return f"{SANDBOX}/" if key == "url" else "x"
+    formats = {
+        "target_category": "12345",
+        "target_product": "12345678",
+        "tiktok_shop_product": "1" * 19,
+    }
+
+    def payload(source: str, key: str) -> dict[str, str]:
+        value = f"{SANDBOX}/" if key == "url" else formats.get(source, "x")
+        domain = {"domain": "com"} if source in testing._REQUIRED_DOMAIN else {}
+        return {"source": source, key: value} | domain
 
     fake = FakeOxylabs(limit=len(sources))
     async with client(fake) as http:
         jobs = [
-            (await http.post(DATA, json={"source": source, key: value(key)})).json()
+            (await http.post(DATA, json=payload(source, key))).json()
             for source, key in sources.items()
         ]
     assert len(sources) == 123
     assert [job["source"] for job in jobs] == list(sources)
-    assert sorted(len(job) for job in jobs) == [7] * 100 + [34] * 23
+    assert sorted(len(job) for job in jobs) == [7] * 97 + [8] * 3 + [34] * 23
 
 
 async def test_short_job_object(fake: FakeOxylabs) -> None:
@@ -271,6 +279,25 @@ async def test_content(fake: FakeOxylabs) -> None:
     assert answer["results"][1]["parser_type"] == ""
     assert "_request" not in answer["results"][0]
     assert answer["job"]["_links"][2]["href_list"][-1].endswith("/results/6/content")
+
+
+@pytest.mark.parametrize(
+    ("payload", "carried"),
+    [
+        ({"source": "walmart_product", "product_id": "1"}, True),
+        ({"source": "youtube_video_trainability", "video_id": "x"}, True),
+        ({"source": "youtube_search", "query": "x"}, False),
+        ({"source": "chatgpt", "prompt": "x"}, False),
+    ],
+)
+async def test_target_request(
+    fake: FakeOxylabs, payload: dict[str, Any], carried: bool
+) -> None:
+    """A result carries the target's request and response on most sources that take no batch."""
+    async with client(fake) as http:
+        job_id = (await http.post(DATA, json=payload)).json()["id"]
+        [result] = (await http.get(f"{DATA}/{job_id}/results")).json()["results"]
+    assert ("_request" in result) is carried
 
 
 @pytest.mark.parametrize(
@@ -431,6 +458,89 @@ async def test_free_checks(
     assert response.headers["x-oxylabs-client-id"] == "123456"
     assert f"{LIMIT}-limit" not in response.headers
     assert fake.jobs == []
+
+
+@pytest.mark.parametrize(
+    ("payload", "errors"),
+    [
+        (
+            {"source": "walmart_product"},
+            ["[product_id]: This field is missing."],
+        ),
+        (
+            {"source": "walmart_product", "query": "436012154"},
+            [
+                "[product_id]: This field is missing.",
+                "[query]: This field was not expected.",
+            ],
+        ),
+        (
+            {"source": "grainger_search"},
+            ["[domain]: This field is missing.", "[query]: This field is missing."],
+        ),
+        (
+            {"source": "youtube_channel", "category_id": "x"},
+            [
+                "[category_id]: This field was not expected.",
+                "[channel_handle]: This field is missing.",
+            ],
+        ),
+        ({"source": "walmart", "url": ""}, ["[url]: This value should not be blank."]),
+        (
+            {"source": "walmart_search", "query": None},
+            ["[query]: This value should not be blank."],
+        ),
+        (
+            {"source": "target_product", "product_id": ""},
+            [
+                "[product_id]: Must be 8 or 10 digits.",
+                "[product_id]: This value should not be blank.",
+            ],
+        ),
+        (
+            {"source": "target_product", "product_id": "1234567a"},
+            ["[product_id]: Must be 8 or 10 digits."],
+        ),
+        (
+            {"source": "tiktok_shop_product", "product_id": "123"},
+            ["[product_id]: Must be 19 digits for product_id."],
+        ),
+        (
+            {"source": "target_category", "category_id": "abcd"},
+            ["[category_id]: Must be 5+ characters."],
+        ),
+    ],
+)
+@pytest.mark.parametrize("url", [DATA, REALTIME])
+async def test_field_errors(
+    fake: FakeOxylabs, url: str, payload: dict[str, Any], errors: list[str]
+) -> None:
+    """A source that takes no batch lists each failed field under `errors`, with no `message`."""
+    async with client(fake) as http:
+        response = await http.post(url, json=payload)
+    answer = response.json()
+    assert response.status_code == 400
+    assert answer["errors"] == errors
+    assert "message" not in answer
+    assert fake.jobs == []
+
+
+async def test_inputs_the_api_takes(fake: FakeOxylabs) -> None:
+    """`walmart_search` takes no `query`, and an LLM source takes `query` but no other key."""
+    async with client(fake) as http:
+        browse = await http.post(DATA, json={"source": "walmart_search"})
+        job_id = browse.json()["id"]
+        [result] = (await http.get(f"{DATA}/{job_id}/results")).json()["results"]
+        query = await http.post(DATA, json={"source": "chatgpt", "query": "x"})
+        other = await http.post(DATA, json={"source": "chatgpt", "category_id": "x"})
+        realtime = await http.post(REALTIME, json={"source": "chatgpt"})
+    assert browse.status_code == query.status_code == 202
+    assert result["url"] == "https://www.example.com/?page=1"
+    assert other.json()["message"] == "Query parameter is empty."
+    assert (realtime.status_code, realtime.json()["message"]) == (
+        400,
+        "Query parameter is empty.",
+    )
 
 
 async def test_batch_checks(fake: FakeOxylabs) -> None:

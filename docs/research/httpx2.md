@@ -299,6 +299,43 @@ httpx2 has no pacing, no requests-per-second limit and no `Retry-After` handling
   Its pre-releases 1.0.dev1 to 1.0.dev6 describe a redesign that puts a client and a server in one package ([1.0.dev6 JSON][pypi-httpx-dev]).
   Those pre-releases depend only on truststore and typing-extensions.
 
+## Why oxy's floor is 2.12.0
+
+A review of every httpx2 and httpcore2 change from 2.0.0 to 2.13.1 found these costs below 2.12.0.
+Each was checked against a 2.0.0 install.
+
+- **An HTTP/2 connection closes under a request, fixed in 2.8.0.**
+  The last stream to close on a connection can mark it idle while another request is starting on it ([#1013][pr-1013]).
+  When no new request reaches that connection within the 5-second keep-alive expiry, the pool closes it, and the request in flight fails with `ReadError`.
+  2.3.0's `fast_acquire` closes the window on asyncio only ([#970][pr-970]).
+  On trio, 17 to 40 of 400 trials lost a request on each version up to 2.7.0, and none did from 2.8.0, whose pool stops expiring a connection that a request references ([#1075][pr-1075]).
+  The retry policy retries a `ReadError`, but a submission that fails this way may already have created a billed job.
+- **anyio below 4.5 breaks every request, fixed in 2.7.0.**
+  In 2.3.0, httpcore2 creates its locks with `fast_acquire=True`, which anyio added in 4.5.0, while httpx2 2.3.0 to 2.6.0 accept any `anyio`.
+  On asyncio, that pair raises `TypeError` on the first request, and oxy's retry policy does not catch it.
+  From 2.7.0, httpx2 requires `anyio>=4.10`, so oxy's anyio floor is 4.10.0.
+- **Each response body waits for the cyclic GC, fixed in 2.3.0.**
+  A `Response` held a reference cycle through its stream ([#948][pr-948]).
+  With 2 MB bodies, peak memory reached 68 to 82 MB on 2.0.0 and stayed at 16 MB on 2.3.0.
+- **An IPv6 range in `NO_PROXY` breaks the client, fixed in 2.5.0.**
+  An entry such as `fd00::/8` makes `AsyncClient` raise `InvalidURL`, so `AsyncSession` fails to build.
+  The fake transport turns off environment proxies, so the `lowest` job cannot catch it.
+- **Proxies leak or hang, fixed in 2.5.0 and 2.6.0.**
+  Behind an HTTP CONNECT proxy, a request cancelled before its tunnel connects leaves a dead connection in the pool ([#983][pr-983]).
+  150 cancels left 100 on 2.0.0, and every later request raised `PoolTimeout`.
+  Before 2.5.0, a SOCKS5 handshake had no read or write timeout ([#1009][pr-1009]).
+- **`verify=True` ignores the operating system's store, changed in 2.3.0.**
+  It reads certifi's bundle, so a TLS-inspection CA held only in the operating system's store fails every request with `ConnectError`.
+- **Reason phrases depend on the version, changed in 2.10.0.**
+  413, 414, 416 and 422 take their RFC 9110 phrases, such as `Unprocessable Content`, and `codes.UNPROCESSABLE_CONTENT` appears.
+  `OxylabsError.message` and `FakeOxylabs.fail(422)` read the phrase, so the fake's messages would change with the installed httpx2.
+- **Security audits fail, fixed in 2.10.0 to 2.12.0.**
+  [GHSA-7mj9-2mp8-4m2p][ghsa-socks] covers httpcore2 below 2.10.0, [GHSA-h4x7-gw46-3wm6][ghsa-multipart] covers httpx2 below 2.11.0, and [GHSA-8xx6-hgc6-gc2m][ghsa-decompress] covers httpx2 below 2.12.0.
+  None of them reaches oxy: it never sends `wss://` through SOCKS5, never sends multipart, and reads whole bodies on every version.
+  A user's audit still flags them.
+
+Newer versions also save about 0.14 ms of CPU per HTTP/2 request, which Oxylabs' latency makes irrelevant.
+
 ## What changes relative to httpx
 
 The changelog says httpx2 forked httpx 0.28.1 at commit `b5addb6`, which is still the latest commit on httpx's `master` (2026-02-23) ([changelog][changelog], [httpx commits][httpx-master]).
@@ -459,3 +496,12 @@ These other primary sources back single claims:
 [ruff-async212]: https://docs.astral.sh/ruff/rules/blocking-http-call-httpx-in-async-function/
 [ox-integration]: https://developers.oxylabs.io/products/web-scraper-api/integration-methods
 [ox-js-rendering]: https://developers.oxylabs.io/products/web-scraper-api/features/js-rendering-and-browser-control
+[pr-948]: https://github.com/pydantic/httpx2/pull/948
+[pr-970]: https://github.com/pydantic/httpx2/pull/970
+[pr-983]: https://github.com/pydantic/httpx2/pull/983
+[pr-1009]: https://github.com/pydantic/httpx2/pull/1009
+[pr-1013]: https://github.com/pydantic/httpx2/pull/1013
+[pr-1075]: https://github.com/pydantic/httpx2/pull/1075
+[ghsa-socks]: https://github.com/advisories/GHSA-7mj9-2mp8-4m2p
+[ghsa-multipart]: https://github.com/advisories/GHSA-h4x7-gw46-3wm6
+[ghsa-decompress]: https://github.com/advisories/GHSA-8xx6-hgc6-gc2m

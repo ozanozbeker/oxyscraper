@@ -116,10 +116,12 @@ uv run --env-file .env pytest -m live
 
 ## Dependencies
 
-Each floor in `pyproject.toml` is as low as the `lowest` job proves, except the `httpx2` floor.
+Each runtime floor in `pyproject.toml` is as low as the `lowest` job proves, except the `httpx2` floor.
 The job proves 2.10.0, and the floor is 2.12.0, because a user's security audit flags every version below it.
 [Why oxy's floor is 2.12.0](docs/research/httpx2.md#why-oxys-floor-is-2120) records the costs below that version.
-A floor rises only in a `deps:` commit, which the changelog shows to users.
+A runtime floor rises only in a `deps:` commit, which the changelog shows to users.
+Each floor in the `dev` group is the newest release at least 7 days old, the cooldown Dependabot uses.
+Users never install that group, so a `chore:` commit raises its floors.
 Dependabot moves `uv.lock` and the pinned actions weekly, after a 7-day cooldown.
 Its `chore` and `ci` prefixes keep those pull requests out of the changelog.
 Dependabot does not read `prek.toml`, so `prek-update.yml` updates the hooks monthly.

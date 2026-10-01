@@ -31,13 +31,14 @@ from pydantic import (
     field_validator,
     model_serializer,
     model_validator,
+    with_config,
 )
 from typing_extensions import TypeAliasType, TypedDict, override
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from pydantic import ModelWrapValidatorHandler, ValidationInfo
+    from pydantic import ModelWrapValidatorHandler
     from pydantic_core import InitErrorDetails
 
 _INPUT_KEYS = (
@@ -70,11 +71,8 @@ _UserAgentType = Literal[
 _T = TypeVar("_T")
 
 
-def _closed(typed_dict: type[_T]) -> type[_T]:
-    """Forbid each key that `typed_dict` does not declare, which pydantic otherwise drops."""
-    # `pydantic.with_config` does this from 2.7, and oxy's floor is 2.4.
-    typed_dict.__pydantic_config__ = ConfigDict(extra="forbid")
-    return typed_dict
+# Without it, a TypedDict keeps an undeclared key unchecked inside `Payload`, and drops it through a `TypeAdapter`.
+_closed = with_config(ConfigDict(extra="forbid"))
 
 
 def _compiled(pattern: str) -> str:
@@ -260,15 +258,9 @@ _ON_ERROR = TypeAdapter(_OnError)
 _SCOPE = TypeAdapter(dict[str, Any])
 
 
-def _parsing_instructions(instructions: object) -> object:
-    """Check each scope of `instructions`, and return them as they are."""
-    # pydantic 2.4 passes `ValidationInfo` to a validator with a second parameter, so `_check_scope` takes `path` instead.
-    _check_scope(instructions, ())
-    return instructions
-
-
-def _check_scope(scope: object, path: tuple[str, ...]) -> None:
-    """Check the pipeline, `_on_error` and fields of the scope at `path`."""
+def _parsing_instructions(scope: object, *, path: tuple[str, ...] = ()) -> object:
+    """Check the pipeline, `_on_error` and fields of the scope at `path`, and return it as it is."""
+    # pydantic before 2.8 passes `ValidationInfo` to a second positional parameter, so `path` is keyword-only.
     # A union over a scope's values reports an error for every branch, so the key names the type to validate.
     for key, value in _checked(_SCOPE, scope, path).items():
         if key == "_fns":
@@ -276,7 +268,8 @@ def _check_scope(scope: object, path: tuple[str, ...]) -> None:
         elif key == "_on_error":
             _checked(_ON_ERROR, value, (*path, key))
         else:
-            _check_scope(value, (*path, key))
+            _parsing_instructions(value, path=(*path, key))
+    return scope
 
 
 def _checked(adapter: TypeAdapter[_T], value: object, path: tuple[str, ...]) -> _T:
@@ -435,17 +428,13 @@ class Payload(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _scrub_errors(
-        cls,
-        data: object,
-        handler: ModelWrapValidatorHandler[Self],
-        info: ValidationInfo,
+        cls, data: object, handler: ModelWrapValidatorHandler[Self]
     ) -> Self:
+        # The call that receives this error renders it with its own input type.
         try:
             return handler(data)
         except ValidationError as error:
-            raise _scrubbed(
-                error, "json" if info.mode == "json" else "python"
-            ) from None
+            raise _scrubbed(error, "python") from None
 
     @override
     def model_post_init(self, context: Any, /) -> None:

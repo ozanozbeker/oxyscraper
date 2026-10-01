@@ -13,6 +13,8 @@ Build = Callable[..., oxy.Payload]
 
 STORAGE_URL = "https://key-id:s3cr3t@storage.example.com/bucket/folder"
 REDACTED_STORAGE_URL = "https://redacted:redacted@storage.example.com/bucket/folder"
+# The API rejects a raw `/`, `?` or `#` in a secret, but `repr` and errors run before submission.
+SECRETS = ["hush/hush", "hush@hush", "hush?hush", "hush#hush", "hush/?#@hush"]
 
 
 @pytest.fixture(params=["init", "model_validate", "model_validate_json"])
@@ -237,6 +239,42 @@ def test_errors_redact_any_input(call: Callable[[], object]) -> None:
         call()
     assert "s3cr3t" not in "".join(traceback.format_exception(caught.value))
     assert "redacted:redacted" in repr(caught.value.errors())
+
+
+@pytest.mark.parametrize("secret", SECRETS)
+def test_redact_every_secret(build: Build, secret: str) -> None:
+    """`repr`, validation errors and the dry run hide a secret that holds `/`, `@`, `?` or `#`."""
+    storage_url = f"https://key-id:{secret}@storage.example.com/bucket/folder"
+    fields = {
+        "source": "universal",
+        "url": "https://example.com",
+        "storage_type": "tos",
+    }
+    payload = build(**fields, storage_url=storage_url)
+    errors = []
+    for call in (
+        lambda: build(
+            **fields, storage_url=storage_url + "/{{ source }}.{{ extension }}"
+        ),
+        lambda: oxy.Payload.model_validate_json(
+            json.dumps(fields | {"storage_url": storage_url})[:-1]
+        ),
+        lambda: oxy.Universal.model_validate(payload),
+    ):
+        with pytest.raises(ValidationError) as caught:
+            call()
+        errors.append(caught.value)
+    shown = [
+        repr(payload),
+        *(
+            text
+            for error in errors
+            for text in (str(error), repr(error.errors()), error.json())
+        ),
+    ]
+    assert REDACTED_STORAGE_URL in shown[0]
+    assert oxy.dry_run([payload]).jobs[0]["storage_url"] == REDACTED_STORAGE_URL
+    assert [text for text in shown if "hush" in text] == []
 
 
 class Job(BaseModel):

@@ -181,6 +181,58 @@ Usage Statistics agrees, and counts the `chatgpt` result as rendered.
   `walmart_product` without `product_id` returned the same `errors` body on Realtime.
   The Push-Pull body put `errors` after `trace_id`, and the Realtime body put it first.
 
+## Keys by source
+
+[Reject the keys a source does not take](https://github.com/ozanozbeker/oxyscraper/issues/99) mapped the top-level keys of the 97 sources without batches on 2026-10-01, from 14:52 to 14:53 UTC.
+Each source got one Push-Pull submission with an empty input and 74 candidate keys: every key in a parameter table of today's target and feature pages, every field of the 34-field job object, and `foo_bar`.
+The empty input made each return 400, and its `errors` list named each key the source does not take.
+The run spent 0 results.
+
+All 97 take 14 shared keys: `aggregate_name`, `browser_instructions`, `callback_url`, `client_notes`, `geo_location`, `markdown`, `parse`, `parser_type`, `parsing_instructions`, `render`, `storage_type`, `storage_url`, `user_agent_type` and `xhr`.
+None of them takes `pages`, `locale`, `context`, `content_encoding` or `parser_preset`.
+
+| Keys beyond the shared ones | Sources |
+| --- | --- |
+| None | `airbnb`, `alibaba`, `aliexpress`, `allegro_product`, `bedbathandbeyond`, `cdiscount`, `costco`, `ebay`, `etsy`, `etsy_product`, `falabella`, `flipkart`, `grainger`, `indiamart`, `instacart`, `magazineluiza`, `mediamarkt`, `mercadolibre`, `petco`, `rakuten`, `tiktok`, `tiktok_shop_product`, `tiktok_shop_search`, `tokopedia`, `youtube_video_trainability`, `zillow` |
+| `domain` | `airbnb_product`, `alibaba_product`, `bedbathandbeyond_product`, `cdiscount_product`, `costco_product`, `dcard_search`, `ebay_product`, `falabella_product`, `flipkart_product`, `grainger_product`, `grainger_search`, `idealo_search`, `indiamart_product`, `indiamart_search`, `instacart_product`, `instacart_search`, `lazada_product`, `magazineluiza_product`, `mediamarkt_product`, `mercadolibre_product`, `mercadolibre_search`, `mercadolivre_product`, `mercadolivre_search`, `rakuten_search` |
+| `limit` | `youtube_channel` |
+| `start_page` | `lazada` |
+| `store_id` | `menards`, `publix`, `publix_product`, `publix_search` |
+| `delivery_zip`, `store_id` | `bodegaaurrera`, `lowes`, `lowes_product` |
+| `domain`, `start_page` | `alibaba_search`, `aliexpress_search`, `avnet_search`, `bedbathandbeyond_search`, `cdiscount_search`, `costco_search`, `ebay_search`, `falabella_search`, `flipkart_search`, `lazada_search`, `magazineluiza_search`, `mediamarkt_search`, `staples_search`, `tokopedia_search` |
+| `domain`, `store_id` | `menards_product` |
+| `domain`, `subdomain` | `aliexpress_product` |
+| `language`, `location` | `youtube_autocomplete` |
+| `delivery_zip`, `domain`, `store_id` | `bestbuy_product` |
+| `delivery_zip`, `fulfillment_type`, `store_id` | `kroger`, `kroger_product`, `target`, `target_category`, `target_product`, `target_search`, `walmart` |
+| `domain`, `fulfillment_type`, `start_page` | `petco_search` |
+| `domain`, `start_page`, `store_id` | `etsy_search` |
+| `delivery_zip`, `domain`, `fulfillment_type`, `store_id` | `walmart_product` |
+| `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` | `kroger_search` |
+| `delivery_zip`, `domain`, `fulfillment_type`, `start_page`, `store_id` | `bestbuy_search` |
+| `delivery_zip`, `domain`, `fulfillment_type`, `store_id`, `subdomain` | `bodegaaurrera_product`, `bodegaaurrera_search` |
+| `delivery_time`, `domain`, `shipping_from`, `start_page`, `store_city`, `store_region` | `allegro_search` |
+| `delivery_today_tomorrow`, `delivery_zip`, `domain`, `free_delivery`, `pickup_today`, `store_id` | `lowes_search` |
+| `delivery_eligible`, `domain`, `fulfillment_center`, `in_stock_today`, `pickup_at_store_eligible`, `start_page`, `store_id` | `menards_search` |
+| `delivery_zip`, `domain`, `fulfillment_speed`, `fulfillment_type`, `max_price`, `min_price`, `sort_by`, `start_page`, `store_id` | `walmart_search` |
+| `360`, `3d`, `4k`, `creative_commons`, `duration`, `hd`, `hdr`, `live`, `location`, `purchased`, `sort_by`, `subtitles`, `type`, `upload_date`, `vr180` | `youtube_search`, `youtube_search_max` |
+
+- **Docs.**
+  A reader compared each of the 41 current docs pages for these sources with the table, and a second reader checked each mismatch.
+  No page names a key that the API rejects, or says that a source lacks a key that it takes.
+  The API takes `domain` on 26 sources whose pages leave it out, `start_page` on `bedbathandbeyond_search` and `mediamarkt_search`, and `subdomain` on `aliexpress_product`.
+  The run cannot say whether these keys change the page.
+  34 of the 97 sources have no page today.
+- **Order.**
+  A shared type check runs first and returns one `message`.
+  The message ``Invalid type for parameter `xhr`, supported types: `boolean`.`` answers a string `xhr`.
+  Next, a `url` without a scheme or a host returns ``Parameter `url` is invalid.`` before the field check.
+  `pages` gets no range check on these sources, only `[pages]: This field was not expected.`
+- **Hosts.**
+  These sources skip the host checks of the batch sources.
+  `walmart` took `https://10.0.0.1/` and `https://www.walmart.example/` with 202, against the plan.
+  Both jobs faulted and billed nothing, and the `.example` job's results entry held `status_code: 10001`, not 613.
+
 ## Context keys by source
 
 A job object lists every `context` key its source takes, with its default.

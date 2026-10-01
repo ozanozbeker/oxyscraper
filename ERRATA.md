@@ -396,8 +396,8 @@ The entries from the input check run cite the pages as published on 2026-10-01.
 - **Docs:** no page says what the API does with a parameter it does not know.
 - **API:** on `universal` and `amazon_search`, an unknown top-level key, an unknown `context` key, and a key that belongs to another source all returned 202.
   The job object left them out, and the job ran and billed.
-  `walmart_product` returned 400 for an unknown key instead, with `[foo_bar]: This field was not expected.`
-- **Evidence:** [Unknown keys](docs/research/live-parameters.md#unknown-keys) and [Probes on 2026-09-29](docs/research/live-parameters.md#probes-on-2026-09-29).
+  The 97 sources without batches returned 400 for an unknown key instead, with `[foo_bar]: This field was not expected.`
+- **Evidence:** [Unknown keys](docs/research/live-parameters.md#unknown-keys), [Probes on 2026-09-29](docs/research/live-parameters.md#probes-on-2026-09-29) and [Keys by source](docs/research/live-parameters.md#keys-by-source).
 
 ### Response Codes: a 400 can list its errors under `errors`, with no `message`
 

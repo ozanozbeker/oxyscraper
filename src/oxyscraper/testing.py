@@ -206,109 +206,199 @@ _CONTEXT: dict[str, dict[str, Any]] = {
     "youtube_metadata": _FIRST_FIVE,
     "youtube_subtitles": _FIRST_FIVE | {"language_code": None, "subtitle_origin": None},
 }
-# The 123 sources that the docs listed on 2026-09-24 (docs/research/parameter-catalog.md).
-_SOURCES = frozenset(_CONTEXT) | {
-    "airbnb",
-    "airbnb_product",
-    "alibaba",
-    "alibaba_product",
-    "alibaba_search",
-    "aliexpress",
-    "aliexpress_product",
-    "aliexpress_search",
-    "allegro_product",
-    "allegro_search",
-    "avnet_search",
-    "bedbathandbeyond",
-    "bedbathandbeyond_product",
-    "bedbathandbeyond_search",
-    "bestbuy_product",
-    "bestbuy_search",
-    "bodegaaurrera",
-    "bodegaaurrera_product",
-    "bodegaaurrera_search",
-    "cdiscount",
-    "cdiscount_product",
-    "cdiscount_search",
-    "chatgpt",
-    "costco",
-    "costco_product",
-    "costco_search",
-    "dcard_search",
-    "ebay",
-    "ebay_product",
-    "ebay_search",
-    "etsy",
-    "etsy_product",
-    "etsy_search",
-    "falabella",
-    "falabella_product",
-    "falabella_search",
-    "flipkart",
-    "flipkart_product",
-    "flipkart_search",
-    "gemini",
-    "grainger",
-    "grainger_product",
-    "grainger_search",
-    "idealo_search",
-    "indiamart",
-    "indiamart_product",
-    "indiamart_search",
-    "instacart",
-    "instacart_product",
-    "instacart_search",
-    "kroger",
-    "kroger_product",
-    "kroger_search",
-    "lazada",
-    "lazada_product",
-    "lazada_search",
-    "lowes",
-    "lowes_product",
-    "lowes_search",
-    "magazineluiza",
-    "magazineluiza_product",
-    "magazineluiza_search",
-    "mediamarkt",
-    "mediamarkt_product",
-    "mediamarkt_search",
-    "menards",
-    "menards_product",
-    "menards_search",
-    "mercadolibre",
-    "mercadolibre_product",
-    "mercadolibre_search",
-    "mercadolivre_product",
-    "mercadolivre_search",
-    "perplexity",
-    "petco",
-    "petco_search",
-    "publix",
-    "publix_product",
-    "publix_search",
-    "rakuten",
-    "rakuten_search",
-    "staples_search",
-    "target",
-    "target_category",
-    "target_product",
-    "target_search",
-    "tiktok",
-    "tiktok_shop_product",
-    "tiktok_shop_search",
-    "tokopedia",
-    "tokopedia_search",
-    "walmart",
-    "walmart_product",
-    "walmart_search",
-    "youtube_autocomplete",
-    "youtube_channel",
-    "youtube_search",
-    "youtube_search_max",
-    "youtube_video_trainability",
-    "zillow",
+# Each of the 97 sources without batches takes the shared keys and those of its row (docs/research/live-parameters.md#keys-by-source).
+# The maintainer edits the table by hand when a caller or a live run finds a mismatch with the API.
+_SHARED_KEYS = frozenset(
+    {
+        "aggregate_name",
+        "browser_instructions",
+        "callback_url",
+        "client_notes",
+        "geo_location",
+        "markdown",
+        "parse",
+        "parser_type",
+        "parsing_instructions",
+        "render",
+        "storage_type",
+        "storage_url",
+        "user_agent_type",
+        "xhr",
+    }
+)
+_DOMAIN = frozenset({"domain"})
+_PAGED = _DOMAIN | {"start_page"}
+_STORE = frozenset({"delivery_zip", "fulfillment_type", "store_id"})
+_YOUTUBE_FILTERS = frozenset(
+    {
+        "360",
+        "3d",
+        "4k",
+        "creative_commons",
+        "duration",
+        "hd",
+        "hdr",
+        "live",
+        "location",
+        "purchased",
+        "sort_by",
+        "subtitles",
+        "type",
+        "upload_date",
+        "vr180",
+    }
+)
+_TAKES: dict[str, frozenset[str]] = {
+    "airbnb": frozenset(),
+    "airbnb_product": _DOMAIN,
+    "alibaba": frozenset(),
+    "alibaba_product": _DOMAIN,
+    "alibaba_search": _PAGED,
+    "aliexpress": frozenset(),
+    "aliexpress_product": frozenset({"domain", "subdomain"}),
+    "aliexpress_search": _PAGED,
+    "allegro_product": frozenset(),
+    "allegro_search": frozenset(
+        {
+            "delivery_time",
+            "domain",
+            "shipping_from",
+            "start_page",
+            "store_city",
+            "store_region",
+        }
+    ),
+    "avnet_search": _PAGED,
+    "bedbathandbeyond": frozenset(),
+    "bedbathandbeyond_product": _DOMAIN,
+    "bedbathandbeyond_search": _PAGED,
+    "bestbuy_product": frozenset({"delivery_zip", "domain", "store_id"}),
+    "bestbuy_search": frozenset(
+        {"delivery_zip", "domain", "fulfillment_type", "start_page", "store_id"}
+    ),
+    "bodegaaurrera": frozenset({"delivery_zip", "store_id"}),
+    "bodegaaurrera_product": frozenset(
+        {"delivery_zip", "domain", "fulfillment_type", "store_id", "subdomain"}
+    ),
+    "bodegaaurrera_search": frozenset(
+        {"delivery_zip", "domain", "fulfillment_type", "store_id", "subdomain"}
+    ),
+    "cdiscount": frozenset(),
+    "cdiscount_product": _DOMAIN,
+    "cdiscount_search": _PAGED,
+    "costco": frozenset(),
+    "costco_product": _DOMAIN,
+    "costco_search": _PAGED,
+    "dcard_search": _DOMAIN,
+    "ebay": frozenset(),
+    "ebay_product": _DOMAIN,
+    "ebay_search": _PAGED,
+    "etsy": frozenset(),
+    "etsy_product": frozenset(),
+    "etsy_search": frozenset({"domain", "start_page", "store_id"}),
+    "falabella": frozenset(),
+    "falabella_product": _DOMAIN,
+    "falabella_search": _PAGED,
+    "flipkart": frozenset(),
+    "flipkart_product": _DOMAIN,
+    "flipkart_search": _PAGED,
+    "grainger": frozenset(),
+    "grainger_product": _DOMAIN,
+    "grainger_search": _DOMAIN,
+    "idealo_search": _DOMAIN,
+    "indiamart": frozenset(),
+    "indiamart_product": _DOMAIN,
+    "indiamart_search": _DOMAIN,
+    "instacart": frozenset(),
+    "instacart_product": _DOMAIN,
+    "instacart_search": _DOMAIN,
+    "kroger": _STORE,
+    "kroger_product": _STORE,
+    "kroger_search": frozenset(
+        {"brand", "delivery_zip", "fulfillment_type", "price_range", "store_id"}
+    ),
+    "lazada": frozenset({"start_page"}),
+    "lazada_product": _DOMAIN,
+    "lazada_search": _PAGED,
+    "lowes": frozenset({"delivery_zip", "store_id"}),
+    "lowes_product": frozenset({"delivery_zip", "store_id"}),
+    "lowes_search": frozenset(
+        {
+            "delivery_today_tomorrow",
+            "delivery_zip",
+            "domain",
+            "free_delivery",
+            "pickup_today",
+            "store_id",
+        }
+    ),
+    "magazineluiza": frozenset(),
+    "magazineluiza_product": _DOMAIN,
+    "magazineluiza_search": _PAGED,
+    "mediamarkt": frozenset(),
+    "mediamarkt_product": _DOMAIN,
+    "mediamarkt_search": _PAGED,
+    "menards": frozenset({"store_id"}),
+    "menards_product": frozenset({"domain", "store_id"}),
+    "menards_search": frozenset(
+        {
+            "delivery_eligible",
+            "domain",
+            "fulfillment_center",
+            "in_stock_today",
+            "pickup_at_store_eligible",
+            "start_page",
+            "store_id",
+        }
+    ),
+    "mercadolibre": frozenset(),
+    "mercadolibre_product": _DOMAIN,
+    "mercadolibre_search": _DOMAIN,
+    "mercadolivre_product": _DOMAIN,
+    "mercadolivre_search": _DOMAIN,
+    "petco": frozenset(),
+    "petco_search": frozenset({"domain", "fulfillment_type", "start_page"}),
+    "publix": frozenset({"store_id"}),
+    "publix_product": frozenset({"store_id"}),
+    "publix_search": frozenset({"store_id"}),
+    "rakuten": frozenset(),
+    "rakuten_search": _DOMAIN,
+    "staples_search": _PAGED,
+    "target": _STORE,
+    "target_category": _STORE,
+    "target_product": _STORE,
+    "target_search": _STORE,
+    "tiktok": frozenset(),
+    "tiktok_shop_product": frozenset(),
+    "tiktok_shop_search": frozenset(),
+    "tokopedia": frozenset(),
+    "tokopedia_search": _PAGED,
+    "walmart": _STORE,
+    "walmart_product": frozenset(
+        {"delivery_zip", "domain", "fulfillment_type", "store_id"}
+    ),
+    "walmart_search": frozenset(
+        {
+            "delivery_zip",
+            "domain",
+            "fulfillment_speed",
+            "fulfillment_type",
+            "max_price",
+            "min_price",
+            "sort_by",
+            "start_page",
+            "store_id",
+        }
+    ),
+    "youtube_autocomplete": frozenset({"language", "location"}),
+    "youtube_channel": frozenset({"limit"}),
+    "youtube_search": _YOUTUBE_FILTERS,
+    "youtube_search_max": _YOUTUBE_FILTERS,
+    "youtube_video_trainability": frozenset(),
+    "zillow": frozenset(),
 }
+# The 123 sources that the docs listed on 2026-09-24 (docs/research/parameter-catalog.md).
+_SOURCES = frozenset(_CONTEXT) | _LLM_SOURCES | frozenset(_TAKES)
 # The 26 sources that took a batch on 2026-09-28 are the LLM sources and those with a full job object (docs/research/live-parameters.md).
 _BATCH_SOURCES = _LLM_SOURCES | frozenset(_CONTEXT)
 # The names of the 97 other sources give their input keys, except these three (docs/research/live-parameters.md#input-checks).
@@ -917,9 +1007,7 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
         if kind == "parsed":
             entry |= {"parser_type": "", "parser_preset": None}
         source = job.payload["source"]
-        if source == "universal" or (
-            source not in _BATCH_SOURCES and source not in _BARE_RESULTS
-        ):
+        if source == "universal" or (source in _TAKES and source not in _BARE_RESULTS):
             faulted = job.outcome.status == "faulted"
             sent: list[Any] | None = None if faulted else []
             headers = None if faulted else {"User-Agent": "Mozilla/5.0"}
@@ -1028,25 +1116,36 @@ def _check(payload: dict[str, Any]) -> Rejected | None:
     source = payload.get("source")
     if source not in _SOURCES:
         return Rejected("Unsupported source.")
-    if source not in _BATCH_SOURCES and (errors := _field_errors(source, payload)):
-        return _Invalid("", errors=errors)
+    if source in _TAKES:
+        return _field_check(source, payload)
     if rejected := _pages_error(source, payload.get("pages", 1)):
         return rejected
     keys = ("prompt", "query") if source in _LLM_SOURCES else _INPUT_KEYS
-    if source in _BATCH_SOURCES and not any(payload.get(key) for key in keys):
+    if not any(payload.get(key) for key in keys):
         if source in _URL_SOURCES:
             return Rejected("Parameter `url` is empty.")
         return Rejected("Query parameter is empty.")
     return _url_error(payload.get("url"))
 
 
+def _field_check(source: str, payload: dict[str, Any]) -> Rejected | None:
+    """Apply the checks of a source without batches."""
+    # The form of a `url` comes before the fields, and these sources skip its host checks.
+    url = payload.get("url")
+    if url and (rejected := _url_error(url, hosts=False)):
+        return rejected
+    errors = _field_errors(source, payload)
+    return _Invalid("", errors=errors) if errors else None
+
+
 def _field_errors(source: str, payload: dict[str, Any]) -> list[str]:
-    """Return the `errors` list of a source that takes no batch, sorted as the API sorts it."""
+    """Return the `errors` list of a source without batches, sorted as the API sorts it."""
     key = _input_key(source)
+    takes = _SHARED_KEYS | _TAKES[source] | {"source", key}
     errors = [
-        f"[{other}]: This field was not expected."
-        for other in _INPUT_KEYS
-        if other != key and other in payload
+        f"[{name}]: This field was not expected."
+        for name in payload
+        if name not in takes
     ]
     if source in _REQUIRED_DOMAIN and "domain" not in payload:
         errors.append("[domain]: This field is missing.")
@@ -1091,7 +1190,7 @@ def _pages_error(source: str, pages: object) -> Rejected | None:
     return None
 
 
-def _url_error(url: object) -> Rejected | None:
+def _url_error(url: object, *, hosts: bool = True) -> Rejected | None:
     if url is None:
         return None
     try:
@@ -1100,6 +1199,8 @@ def _url_error(url: object) -> Rejected | None:
         parsed = None
     if parsed is None or parsed.scheme not in {"http", "https"} or not parsed.host:
         return Rejected("Parameter `url` is invalid.")
+    if not hosts:
+        return None
     with contextlib.suppress(ValueError):
         ipaddress.ip_address(parsed.host)
         return Rejected("The hostname cannot be an ip address.")

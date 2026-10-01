@@ -509,6 +509,17 @@ async def test_free_checks(
             {"source": "target_category", "category_id": "abcd"},
             ["[category_id]: Must be 5+ characters."],
         ),
+        (
+            {"source": "walmart_product", "product_id": "1", "foo_bar": "x"},
+            ["[foo_bar]: This field was not expected."],
+        ),
+        (
+            {"source": "walmart_product", "product_id": "", "pages": 25},
+            [
+                "[pages]: This field was not expected.",
+                "[product_id]: This value should not be blank.",
+            ],
+        ),
     ],
 )
 @pytest.mark.parametrize("url", [DATA, REALTIME])
@@ -523,6 +534,22 @@ async def test_field_errors(
     assert answer["errors"] == errors
     assert "message" not in answer
     assert fake.jobs == []
+
+
+async def test_keys_a_source_takes(fake: FakeOxylabs) -> None:
+    """A source takes the shared keys and its own, and checks only the form of a `url` before them."""
+    async with client(fake) as http:
+        youtube = await http.post(
+            DATA, json={"source": "youtube_search", "query": "x", "render": "html"}
+        )
+        invalid = await http.post(
+            DATA, json={"source": "walmart", "url": "not a url", "foo_bar": "x"}
+        )
+        ip_address = await http.post(
+            DATA, json={"source": "walmart", "url": "https://10.0.0.1/"}
+        )
+    assert youtube.status_code == ip_address.status_code == 202
+    assert invalid.json()["message"] == "Parameter `url` is invalid."
 
 
 async def test_inputs_the_api_takes(fake: FakeOxylabs) -> None:

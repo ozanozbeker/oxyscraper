@@ -906,7 +906,7 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
         url = payload.get("url")
         host = httpx2.URL(url).host if isinstance(url, str) else ""
         context = _CONTEXT[payload["source"]]
-        # The Amazon sources and `youtube_metadata` add this key for `parse: true`.
+        # Only Amazon and `youtube_metadata` showed this key for `parse: true`, so the fake extends it to all 23 sources.
         if payload.get("parse") is True:
             context = context | {"successful_parse_status_codes": []}
         sent = {

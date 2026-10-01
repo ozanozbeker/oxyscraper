@@ -627,3 +627,12 @@ def test_parsing_instructions_raise(
             parse=True,
             parsing_instructions=instructions,
         )
+
+
+def test_json_schema() -> None:
+    """`Payload.model_json_schema` allows any value in `parsing_instructions`, on every supported pydantic."""
+    schema = oxy.Payload.model_json_schema()
+    assert schema["properties"]["parsing_instructions"]["anyOf"] == [
+        {},
+        {"type": "null"},
+    ]

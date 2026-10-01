@@ -66,7 +66,8 @@ class Result:
     type
         The output type.
     status_code
-        The target's status code, or 613 for a faulted job.
+        The target's status code.
+        A faulted job's entry holds 613 or 400, and a faulted job can have no entry.
     content
         The content, with `png` decoded from Base64 to bytes.
     created_at
@@ -323,7 +324,7 @@ class Run:
     """The jobs of one run, each as it finishes.
 
     Iteration yields each job once, so `all`, `one` and `partitions` return only the jobs it has not yet yielded.
-    After the last job, it raises `IncompleteRunError` if a payload ended with no done or faulted job.
+    After the last job, it raises `IncompleteRunError` if a payload ended with no done or faulted job, and raises it again on each later call.
     """
 
     def __init__(self, jobs: Iterator[Job]) -> None:
@@ -757,7 +758,8 @@ class Session:
         run = self._portal.call(
             partial(self._session.stream, payloads, output_types=output_types)
         )
-        return Run(self._jobs(run))
+        # A generator ends once it raises, and `iter` with a sentinel calls again, so a second `all` raises too.
+        return Run(iter(partial(self._next_job, run), None))
 
     def get(self, job_id: str, *, output_types: Sequence[_OutputType] = ()) -> Job:
         """Return a job as it stands, at once.
@@ -768,12 +770,11 @@ class Session:
             partial(self._session.get, job_id, output_types=output_types)
         )
 
-    def _jobs(self, run: AsyncRun) -> Iterator[Job]:
-        while True:
-            try:
-                yield self._portal.call(run.__anext__)
-            except StopAsyncIteration:
-                return
+    def _next_job(self, run: AsyncRun) -> Job | None:
+        try:
+            return self._portal.call(run.__anext__)
+        except StopAsyncIteration:
+            return None
 
 
 @dataclass(frozen=True, kw_only=True)

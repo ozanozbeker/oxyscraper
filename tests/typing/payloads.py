@@ -58,6 +58,10 @@ pipeline.append({"_fn": "select_nth", "_args": "1"})  # E: not assignable
 fields["title"] = {"_on_error": "ignore"}  # E: 'ignore'
 actions.append({"type": "wait", "wait_time": 5})  # E: not assignable
 actions.append({"type": "scroll", "x": 0})  # E: not assignable
+# The limits that the docstrings of `ParsingInstructions` and `BrowserInstruction` name.
+loose: oxy.ParsingInstructions = {"t": "warn"}
+oxy.Payload(source="universal", url=URL, parsing_instructions={"t": {"_fn": 1}})
+oxy.Payload(source="universal", url=URL, browser_instructions=[{"type": "wait"}])
 
 report = oxy.dry_run([payload])
 assert_type(report, oxy.DryRun)

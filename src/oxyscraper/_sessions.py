@@ -46,8 +46,9 @@ _MAX_WAIT = 30.0
 _RETRIED = (httpx2.TimeoutException, httpx2.NetworkError, httpx2.RemoteProtocolError)
 # These fail before the request leaves, so the API created no job.
 _UNSENT = (httpx2.ConnectError, httpx2.ConnectTimeout, httpx2.PoolTimeout)
-_REJECTED = frozenset({httpx2.codes.BAD_REQUEST, httpx2.codes.UNPROCESSABLE_CONTENT})
-_UNAUTHORIZED = frozenset({httpx2.codes.UNAUTHORIZED, httpx2.codes.FORBIDDEN})
+# httpx2 renamed 422's constant after the floor version, and warns on the old name.
+_REJECTED = frozenset({400, 422})
+_UNAUTHORIZED = frozenset({401, 403})
 _THROTTLE = re.compile(r"Access to \S+ has been limited to 1 req/s")
 # The API's 500 page names its trace ID only in its text.
 _TRACE_ID = re.compile(r"trace_id: ([\w-]+)")

@@ -29,6 +29,8 @@ with oxy.Session(username="USERNAME", password="PASSWORD") as session:  # noqa: 
     session.execute(payload, output_types=["html"])  # E: output_types
     session.execute(payload, destination=Path("results"))
     session.execute(payload, destination=MemoryStore())
+    session.execute(payload, run_log="logs")
+    session.execute(payload, run_log=MemoryStore())
     try:
         session.execute(payload).all()
     except oxy.IncompleteRunError as error:

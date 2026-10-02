@@ -713,9 +713,13 @@ async def test_failed_write(tmp_path: Path, caplog: pytest.LogCaptureFixture) ->
     # The first payload takes the whole render budget, so the last two wait for the next window.
     full = universal(render="html", pages=13)
     held = [universal("1", render="html"), universal("2", render="html")]
+    store = MemoryStore()
     async with open_async_session(transport=fake) as session:
         run = await session.stream(
-            [full, universal("slow"), *held], realtime=True, destination=tmp_path
+            [full, universal("slow"), *held],
+            realtime=True,
+            destination=tmp_path,
+            run_log=store,
         )
         error = await incomplete(run)
     assert sorted(job.id for job in error.jobs) == [job["id"] for job in fake.jobs]
@@ -730,6 +734,10 @@ async def test_failed_write(tmp_path: Path, caplog: pytest.LogCaptureFixture) ->
     assert stopped == (
         "Stopped submitting, because a write to the destination failed; 2 payloads stay unsubmitted"
     )
+    *_, first, second = logged(store)
+    assert first["error"] == second["error"]
+    assert first["error"]["status_code"] is None
+    assert first["error"]["message"].startswith(f"{type(error.__cause__).__name__}: ")
 
 
 @on_real_time
@@ -743,6 +751,205 @@ async def test_failed_last_write(tmp_path: Path) -> None:
     assert [job.status for job in error.jobs] == ["done"]
     assert isinstance(error.__cause__, obstore.exceptions.BaseError)
     assert str(error) == "the run stopped"
+
+
+def trace(number: int) -> str:
+    """Return the fake's trace ID for its `number`th error response."""
+    return f"{number:08x}-{'0' * 24}"
+
+
+def logged(store: MemoryStore) -> list[dict[str, Any]]:
+    """Return the lines of the store's only run log."""
+    [log] = stored(store).values()
+    return [json.loads(line) for line in log.splitlines()]
+
+
+def record(
+    state: str,
+    payload: dict[str, Any],
+    job_id: str | None = None,
+    error: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "state": state,
+        "id": job_id,
+        "payload": payload,
+        "error": error,
+        "upload": None,
+    }
+
+
+@on_mock_clock
+async def test_run_log() -> None:
+    """The run log holds one line per payload in input order, with `storage_url` credentials redacted."""
+    fake = FakeOxylabs(
+        lambda payload: Outcome(
+            status="faulted" if "FAULT" in payload["url"] else "done",
+            after=math.inf if "STUCK" in payload["url"] else 0,
+        )
+    )
+    rejected = oxy.Payload(
+        source="universal",
+        url="https://10.0.0.1/",
+        storage_type="s3_compatible",
+        storage_url="https://key-id:s3cr3t@storage.example.com/bucket",
+    )
+    payloads = [universal("1"), rejected, universal("FAULT"), universal("STUCK")]
+    store = MemoryStore()
+    async with open_async_session(transport=fake, pending_limit=5) as session:
+        error = await incomplete(await session.stream(payloads, run_log=store))
+    done, faulted = sorted(error.jobs, key=lambda job: job.status)
+    [rejection] = error.rejections
+    [stuck] = error.unfetched
+    assert logged(store) == [
+        record("done", {"source": "universal", "url": f"{SANDBOX}/1"}, done.id),
+        record(
+            "rejected",
+            {
+                "source": "universal",
+                "url": "https://10.0.0.1/",
+                "storage_type": "s3_compatible",
+                "storage_url": "https://redacted:redacted@storage.example.com/bucket",
+            },
+            error={
+                "status_code": 400,
+                "message": "The hostname cannot be an ip address.",
+                "trace_id": rejection.trace_id,
+            },
+        ),
+        record(
+            "faulted", {"source": "universal", "url": f"{SANDBOX}/FAULT"}, faulted.id
+        ),
+        record(
+            "unfetched", {"source": "universal", "url": f"{SANDBOX}/STUCK"}, stuck.id
+        ),
+    ]
+
+
+def test_empty_run_log() -> None:
+    """oxy writes an empty run log before the first submission, on Realtime too."""
+    store = MemoryStore()
+    seen: list[dict[str, bytes]] = []
+
+    def outcome(payload: dict[str, Any]) -> Outcome:
+        seen.append(stored(store))
+        return Outcome()
+
+    with FakeOxylabs(outcome), open_session() as session:
+        job = session.execute(universal(), realtime=True, run_log=store).one()
+    assert [list(contents.values()) for contents in seen] == [[b""]]
+    assert logged(store) == [
+        record("done", {"source": "universal", "url": f"{SANDBOX}/"}, job.id)
+    ]
+
+
+@on_mock_clock
+@pytest.mark.parametrize("taken", [True, False])
+async def test_run_log_after_a_stop(
+    caplog: pytest.LogCaptureFixture, taken: bool
+) -> None:
+    """Leaving the `with` block, after a `break` or without taking the done job, writes the pending job as unfetched."""
+    fake = FakeOxylabs(
+        lambda payload: Outcome(after=math.inf if "STUCK" in payload["url"] else 0)
+    )
+    store = MemoryStore()
+    async with open_async_session(transport=fake) as session:
+        run = await session.stream([universal("1"), universal("STUCK")], run_log=store)
+        if taken:
+            async for _ in run:
+                break
+        else:
+            await anyio.sleep(1.5)
+    done, stuck = (job["id"] for job in fake.jobs)
+    assert logged(store) == [
+        record("done", {"source": "universal", "url": f"{SANDBOX}/1"}, done),
+        record("unfetched", {"source": "universal", "url": f"{SANDBOX}/STUCK"}, stuck),
+    ]
+    assert (run.progress.pending, run.progress.unfetched) == (0, 1)
+    [name] = stored(store)
+    assert warnings(caplog) == [
+        f"Stopped with 1 job pending, which may still bill; the run log at {name} lists their IDs"
+    ]
+
+
+def test_run_log_folder(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A run writes `<run_log>/<run start>.jsonl`, with the start in UTC to the millisecond, and names it in an INFO line."""
+    caplog.set_level(logging.INFO, "oxyscraper")
+    folder = tmp_path / "logs"
+    before = datetime.now(UTC)
+    with open_session() as session:
+        session.execute(universal(), realtime=True, run_log=str(folder)).one()
+        session.execute(universal(), realtime=True, run_log="memory:///").one()
+    after = datetime.now(UTC)
+    [log] = folder.iterdir()
+    assert re.fullmatch(r"\d{8}T\d{6}\.\d{3}Z\.jsonl", log.name)
+    started = datetime.strptime(log.name, "%Y%m%dT%H%M%S.%fZ.jsonl").replace(tzinfo=UTC)
+    assert before - timedelta(milliseconds=1) <= started <= after
+    first, second = (
+        message for message in lines(caplog, logging.INFO) if "run log" in message
+    )
+    assert first == f"Wrote the run log to {log}"
+    assert re.fullmatch(r"Wrote the run log to memory:///\d{8}T[\d.]+Z\.jsonl", second)
+
+
+@on_real_time
+async def test_failed_run_log(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A failed final write of the run log raises after the last job."""
+    async with open_async_session() as session:
+        run = await session.stream(universal(), realtime=True, run_log=tmp_path)
+        # The run's first checkpoint comes after this, so the final write finds a folder.
+        [log] = tmp_path.iterdir()  # noqa: ASYNC240
+        log.unlink()
+        log.mkdir()
+        error = await incomplete(run)
+    assert [job.status for job in error.jobs] == ["done"]
+    assert isinstance(error.__cause__, obstore.exceptions.BaseError)
+    [failed] = warnings(caplog)
+    assert failed.startswith(f"Writing the run log to {log} failed: ")
+
+
+@on_mock_clock
+async def test_run_log_errors() -> None:
+    """An unsubmitted or unfetched payload's line holds the error behind it."""
+
+    def outcome(payload: dict[str, Any]) -> Outcome:
+        fake.fail(403, on="submit", times=None)
+        return Outcome(after=math.inf)
+
+    fake = FakeOxylabs(outcome)
+    fake.fail(404, on="results")
+    store = MemoryStore()
+    async with open_async_session(transport=fake) as session:
+        error = await incomplete(
+            await session.stream([walmart("1"), walmart("2")], run_log=store)
+        )
+    [unfetched] = error.unfetched
+    assert logged(store) == [
+        record(
+            "unfetched",
+            {"source": "walmart_product", "product_id": "1"},
+            unfetched.id,
+            {"status_code": 404, "message": "Not Found", "trace_id": trace(2)},
+        ),
+        record(
+            "unsubmitted",
+            {"source": "walmart_product", "product_id": "2"},
+            error={"status_code": 403, "message": "Forbidden", "trace_id": trace(1)},
+        ),
+    ]
+
+
+@on_mock_clock
+async def test_run_log_after_leaving_at_once(fake: FakeOxylabs) -> None:
+    """Leaving the `with` block before the first submission writes every payload as unsubmitted."""
+    store = MemoryStore()
+    async with open_async_session() as session:
+        await session.stream([universal("1"), universal("2")], run_log=store)
+    assert fake.requests == []
+    assert logged(store) == [
+        record("unsubmitted", {"source": "universal", "url": f"{SANDBOX}/1"}),
+        record("unsubmitted", {"source": "universal", "url": f"{SANDBOX}/2"}),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1014,28 +1221,37 @@ async def test_domain_throttle(fake: FakeOxylabs) -> None:
 
 @on_mock_clock
 @pytest.mark.parametrize(
-    ("status", "phrase"), [(401, "Unauthorized"), (403, "Forbidden")]
+    ("status", "phrase", "trace_id"),
+    [(401, "Unauthorized", None), (403, "Forbidden", trace(1))],
 )
 async def test_unauthorized_check(
-    caplog: pytest.LogCaptureFixture, status: int, phrase: str
+    caplog: pytest.LogCaptureFixture, status: int, phrase: str, trace_id: str | None
 ) -> None:
-    """A 401 or 403 on a check stops the run at once, with every pending job unfetched."""
+    """A 401 or 403 on a check stops the run at once, with every pending job unfetched because of it."""
 
     def outcome(payload: dict[str, Any]) -> Outcome:
         fake.fail(status, on="results", times=None)
         return Outcome(after=30)
 
     fake = FakeOxylabs(outcome)
+    store = MemoryStore()
     async with open_async_session(transport=fake) as session:
         started = anyio.current_time()
-        error = await incomplete(await session.stream([universal("1"), universal("2")]))
+        error = await incomplete(
+            await session.stream([universal("1"), universal("2")], run_log=store)
+        )
         elapsed = anyio.current_time() - started
     assert elapsed == 1
     assert sorted(job.id for job in error.unfetched) == [job["id"] for job in fake.jobs]
     assert {job.status for job in error.unfetched} == {"pending"}
     assert cause(error).status_code == status
+    assert [record["error"] for record in logged(store)] == 2 * [
+        {"status_code": status, "message": phrase, "trace_id": trace_id}
+    ]
+    [name] = stored(store)
     assert warnings(caplog) == [
-        f"Stopped checking 2 jobs, because the API returned {status} {phrase}; each may still bill"
+        f"Stopped checking 2 jobs, because the API returned {status} {phrase}; each may still bill",
+        f"Stopped with 2 jobs pending, which may still bill; the run log at {name} lists their IDs",
     ]
 
 

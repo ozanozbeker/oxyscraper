@@ -35,7 +35,7 @@ Issues = "https://github.com/ozanozbeker/oxyscraper/issues"
 Repository = "https://github.com/ozanozbeker/oxyscraper"
 
 [dependency-groups]
-# Each floor is the newest release at least 7 days old (CONTRIBUTING.md).
+# `prek-update.yml` sets each floor to its version in `uv.lock` monthly (CONTRIBUTING.md).
 dev = [
   "coverage>=7.16.1",
   "prek>=0.5.3",

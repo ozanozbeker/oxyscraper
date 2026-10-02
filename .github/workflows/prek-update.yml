@@ -1,6 +1,6 @@
 name: Update hooks
 
-# Dependabot does not read `prek.toml`, so this workflow updates its hooks.
+# Dependabot does not read `prek.toml` or raise a floor, so this workflow updates the hooks and the `dev` floors.
 on:
   schedule:
     - cron: "17 6 1 * *"
@@ -29,12 +29,32 @@ jobs:
           enable-cache: false
       # The 7 days match Dependabot's cooldown.
       - run: uv run --locked --only-dev prek update --freeze --cooldown-days 7
+      # `uv add` keeps an existing specifier, even with `--upgrade-package` or `--bounds`.
+      - run: |
+          python3 - <<'EOF'
+          import re, tomllib
+          from pathlib import Path
+
+          pyproject = Path("pyproject.toml")
+          locked = {}
+          # uv.lock lists a name's versions in ascending order, so a lock split by Python keeps the lowest.
+          for package in tomllib.loads(Path("uv.lock").read_text())["package"]:
+              locked.setdefault(package["name"], package["version"])
+          text = pyproject.read_text()
+          for req in tomllib.loads(text)["dependency-groups"]["dev"]:
+              # Only a plain floor changes, so extras, markers and upper bounds stay as written.
+              if match := re.fullmatch(r"([\w.-]+)>=[\w.]+", req):
+                  floor = locked[re.sub(r"[-_.]+", "-", match[1]).lower()]
+                  text = text.replace(f'"{req}"', f'"{match[1]}>={floor}"')
+          pyproject.write_text(text)
+          EOF
+          uv lock
       - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ steps.app.outputs.token }}
           sign-commits: true
           branch: prek-update
           delete-branch: true
-          commit-message: "chore: update prek hooks"
-          title: "chore: update prek hooks"
-          body: "`prek update --freeze --cooldown-days 7` found newer hook releases."
+          commit-message: "chore: update prek hooks and dev floors"
+          title: "chore: update prek hooks and dev floors"
+          body: "`prek update --freeze --cooldown-days 7` found newer hook releases, or a `dev` floor is below its version in `uv.lock`."

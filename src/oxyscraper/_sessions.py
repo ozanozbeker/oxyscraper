@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
 from importlib.metadata import version
-from typing import TYPE_CHECKING, Any, Literal, Self, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
 
 import anyio
 import httpx2
@@ -28,7 +28,7 @@ from oxyscraper._payloads import _INPUT_KEYS, Payload, _integer, _redacted
 from oxyscraper.testing import _switched_on
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
     from anyio.abc import TaskGroup
     from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 _OutputType = Literal["raw", "parsed", "png", "markdown", "xhr"]
 _Status = Literal["pending", "done", "faulted"]
 _Content = str | bytes | dict[str, Any] | list[Any]
+_T = TypeVar("_T")
 
 _DATA = "https://data.oxylabs.io/v1/queries"
 _USER_AGENT = f"oxyscraper/{version('oxyscraper')}"
@@ -43,7 +44,12 @@ _USER_AGENT = f"oxyscraper/{version('oxyscraper')}"
 _MAX_REQUESTS = 100
 _MAX_WAITING = 100
 _MAX_WAIT = 30.0
-_RETRIED = (httpx2.TimeoutException, httpx2.NetworkError, httpx2.RemoteProtocolError)
+_RETRIED = (
+    httpx2.TimeoutException,
+    httpx2.NetworkError,
+    httpx2.RemoteProtocolError,
+    httpx2.DecodingError,
+)
 # These fail before the request leaves, so the API created no job.
 _UNSENT = (httpx2.ConnectError, httpx2.ConnectTimeout, httpx2.PoolTimeout)
 _REJECTED = frozenset({httpx2.codes.BAD_REQUEST, httpx2.codes.UNPROCESSABLE_CONTENT})
@@ -551,12 +557,10 @@ class AsyncSession:
         OxylabsError
             If the API returns an error, or a network failure lasts past the retry limit.
         """
-        response, body = await self._results(job_id, output_types)
-        if body is None:
-            _, data = await self._request("GET", f"{_DATA}/{job_id}")
-            status = response.headers["x-oxylabs-job-status"]
-            return _job(data, [], status=status)
-        return _job(body["job"], body["results"])
+        fetched = await self._results(job_id, output_types)
+        if isinstance(fetched, Job):
+            return fetched
+        return await self._status(job_id, fetched)
 
     async def _run(self, state: _RunState) -> None:
         async with state.send:
@@ -572,7 +576,12 @@ class AsyncSession:
         """Submit one payload, and start the checks of its job."""
         body = line.payload.model_dump()
         try:
-            _, data = await self._request("POST", _DATA, json=body)
+            line.job = await self._request(
+                "POST",
+                _DATA,
+                lambda response: _job(response.json(), [], payload=line.payload),
+                json=body,
+            )
         except OxylabsError as error:
             if error.status_code not in _REJECTED:
                 state.stop(error, state.submitting)
@@ -587,17 +596,24 @@ class AsyncSession:
             _logger.warning("Rejected %s %s: %s", *_named(body), error)
             return
         line.state = "pending"
-        line.job = _job(data, [], payload=line.payload)
         checks.start_soon(self._check, state, line, line.job)
 
     async def _check(self, state: _RunState, line: _Line, pending: Job) -> None:
         """Check a job until it finishes, or until oxy stops checking it."""
         accepted = anyio.current_time()
         for age in itertools.chain(range(1, 10), itertools.count(10, 5)):
+            # A check delayed by retries or a slow loop skips the checks it overran, instead of sending them at once.
+            if accepted + age <= anyio.current_time():
+                continue
             await anyio.sleep_until(accepted + age)
             await state.waiting.acquire()
             try:
-                _, body = await self._results(pending.id, state.output_types)
+                fetched = await self._results(
+                    pending.id, state.output_types, line.payload
+                )
+                # A faulted job can have no results, so its 204 names its status alone.
+                if isinstance(fetched, str) and fetched != "pending":
+                    fetched = await self._status(pending.id, fetched, line.payload)
             except OxylabsError as error:
                 state.waiting.release()
                 if error.status_code in _UNAUTHORIZED:
@@ -612,8 +628,8 @@ class AsyncSession:
                     pending.input,
                 )
                 return
-            if body is not None:
-                job = _job(body["job"], body["results"], payload=line.payload)
+            if isinstance(fetched, Job):
+                job = fetched
                 line.state, line.job = job.status, job
                 if job.status == "faulted":
                     _logger.warning(
@@ -636,21 +652,44 @@ class AsyncSession:
                 return
 
     async def _results(
-        self, job_id: str, output_types: Sequence[_OutputType]
-    ) -> tuple[httpx2.Response, Any]:
-        """Fetch a job's results, which returns 204 and no body while the job is pending."""
+        self,
+        job_id: str,
+        output_types: Sequence[_OutputType],
+        payload: Payload | None = None,
+    ) -> Job | str:
+        """Fetch a job with its results, or the status that a 204 names for a job with none."""
         params = {"type": ",".join(output_types)} if output_types else None
-        return await self._request("GET", f"{_DATA}/{job_id}/results", params=params)
+
+        def read(response: httpx2.Response) -> Job | str:
+            if response.status_code == httpx2.codes.NO_CONTENT:
+                return response.headers["x-oxylabs-job-status"]
+            body = response.json()
+            return _job(body["job"], body["results"], payload=payload)
+
+        return await self._request(
+            "GET", f"{_DATA}/{job_id}/results", read, params=params
+        )
+
+    async def _status(
+        self, job_id: str, status: str, payload: Payload | None = None
+    ) -> Job:
+        """Fetch a job with no results from the status endpoint, with the status that its 204 named."""
+        return await self._request(
+            "GET",
+            f"{_DATA}/{job_id}",
+            lambda response: _job(response.json(), [], status=status, payload=payload),
+        )
 
     async def _request(
         self,
         method: str,
         url: str,
+        read: Callable[[httpx2.Response], _T],
         *,
         json: dict[str, Any] | None = None,
         params: Mapping[str, str] | None = None,
-    ) -> tuple[httpx2.Response, Any]:
-        """Send a request under the retry policy, and return the response and its parsed body.
+    ) -> _T:
+        """Send a request under the retry policy, and return what `read` returns for the response.
 
         Raises
         ------
@@ -661,7 +700,7 @@ class AsyncSession:
         ceiling = 1.0
         while True:
             try:
-                return await self._attempt(method, url, json=json, params=params)
+                return await self._attempt(method, url, read, json=json, params=params)
             except OxylabsError as error:
                 now = anyio.current_time()
                 deadline = now + self._retry_limit if deadline is None else deadline
@@ -680,10 +719,11 @@ class AsyncSession:
         self,
         method: str,
         url: str,
+        read: Callable[[httpx2.Response], _T],
         *,
         json: dict[str, Any] | None,
         params: Mapping[str, str] | None,
-    ) -> tuple[httpx2.Response, Any]:
+    ) -> _T:
         try:
             async with self._hosts[httpx2.URL(url).host]:
                 # The API may create a job once a submission is sent, so a stop lets the attempt finish and keeps the job's ID.
@@ -692,16 +732,15 @@ class AsyncSession:
                         method, url, json=json, params=params
                     )
             response.raise_for_status()
-            if response.status_code == httpx2.codes.NO_CONTENT:
-                return response, None
             try:
-                return response, response.json()
-            except ValueError as error:
-                msg = f"the API returned {response.status_code} with a body that is not JSON"
+                return read(response)
+            # A body of an unexpected shape counts as one that does not parse.
+            except (ValueError, LookupError, TypeError) as error:
+                msg = f"the API returned {response.status_code} with a body that oxy cannot read"
                 raise httpx2.RemoteProtocolError(msg) from error
         except httpx2.HTTPStatusError as error:
             raise _error(error.response) from error
-        except httpx2.TransportError as error:
+        except httpx2.RequestError as error:
             message = f"{type(error).__name__}: {error}".removesuffix(": ")
             raise OxylabsError(status_code=None, message=message) from error
 

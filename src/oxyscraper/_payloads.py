@@ -17,6 +17,7 @@ from typing import (
     Required,
     Self,
     TypeVar,
+    get_args,
 )
 from urllib.parse import urlsplit
 
@@ -44,15 +45,10 @@ if TYPE_CHECKING:
     from pydantic.functional_validators import ModelWrapValidatorHandler
     from pydantic_core import InitErrorDetails
 
-_INPUT_KEYS = (
-    "query",
-    "url",
-    "product_id",
-    "prompt",
-    "video_id",
-    "channel_handle",
-    "category_id",
-)
+_InputKey = Literal[
+    "query", "url", "product_id", "prompt", "video_id", "channel_handle", "category_id"
+]
+_INPUT_KEYS: tuple[_InputKey, ...] = get_args(_InputKey)
 # The API reads the userinfo up to the last `@`, and the first branch also covers a raw `/`, `?` or `#` in a secret, which the API rejects.
 _CREDENTIALS = re.compile(r"(?<=://)(?:[^/?#:\s\"']*:[^\s\"']*|[^/?#\s\"']+)(?=@)")
 # The API reads a `pages` or `start_page` string as an integer in this form alone (docs/research/live-parameters.md#pages).

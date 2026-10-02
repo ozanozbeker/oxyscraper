@@ -35,6 +35,13 @@ Documentation = "https://ozanozbeker.com/oxyscraper/"
 Issues = "https://github.com/ozanozbeker/oxyscraper/issues"
 Repository = "https://github.com/ozanozbeker/oxyscraper"
 
+[project.scripts]
+oxy = "oxyscraper._main:main"
+oxyscraper = "oxyscraper._main:main"
+
+[project.optional-dependencies]
+cli = ["rich>=13.8.0", "typer>=0.26.0"]
+
 [dependency-groups]
 # `prek-update.yml` sets each floor to its version in `uv.lock` monthly (CONTRIBUTING.md).
 dev = [

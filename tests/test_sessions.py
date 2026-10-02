@@ -4,14 +4,18 @@ import logging
 import math
 import random
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from importlib.metadata import version
+from pathlib import Path
 from typing import Any, Literal
 
 import anyio
 import httpx2
+import obstore
 import pytest
+from obstore.store import MemoryStore
 from typing_extensions import override
 
 import oxyscraper as oxy
@@ -31,6 +35,8 @@ START = datetime(2026, 1, 1, tzinfo=UTC)
 PNG = b"\x89PNG\r\n\x1a\n"
 # Tests that wait run on trio's mock clock only, so their waits take no real time.
 on_mock_clock = pytest.mark.parametrize("anyio_backend", ["trio"], indirect=True)
+# The mock clock jumps while a write waits on its worker thread, so tests that write run on real time.
+on_real_time = pytest.mark.parametrize("anyio_backend", ["asyncio", "trio"])
 
 
 def universal(path: str = "", **fields: Any) -> oxy.Payload:
@@ -100,6 +106,29 @@ class Garbled(FakeOxylabs):
             self.garbled += 1
             return httpx2.Response(200, text=self.body)
         return await super().handle_async_request(request)
+
+
+class Recorded(FakeOxylabs):
+    """Keep the body of each response that holds a job's results, by job ID."""
+
+    def __init__(self, outcome: Outcome | Callable[[dict[str, Any]], Outcome]) -> None:
+        super().__init__(outcome)
+        self.bodies: dict[str, bytes] = {}
+
+    @override
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        response = await super().handle_async_request(request)
+        if response.status_code == 200 and "results" in (body := response.json()):
+            self.bodies[body["job"]["id"]] = response.content
+        return response
+
+
+def stored(store: MemoryStore) -> dict[str, bytes]:
+    return {
+        meta["path"]: bytes(obstore.get(store, meta["path"]).bytes())
+        for chunk in obstore.list(store)
+        for meta in chunk
+    }
 
 
 def test_session_runs_a_payload(fake: FakeOxylabs) -> None:
@@ -547,12 +576,17 @@ async def test_realtime_rejections(caplog: pytest.LogCaptureFixture) -> None:
 SLOW = f"{SANDBOX}/slow"
 
 
-async def test_realtime_storage_type(fake: FakeOxylabs) -> None:
-    """`realtime=True` with a payload that sets `storage_type` raises before any request."""
+@pytest.mark.parametrize(
+    "arguments", [{"realtime": True}, {"destination": MemoryStore()}]
+)
+async def test_storage_type_conflicts(
+    fake: FakeOxylabs, arguments: dict[str, Any]
+) -> None:
+    """`realtime=True` or `destination=` with a payload that sets `storage_type` raises before any request."""
     payloads = [universal(), universal(storage_type="gcs", storage_url="gs://bucket")]
     async with open_async_session() as session:
         with pytest.raises(ValueError, match="storage_type"):
-            await session.stream(payloads, realtime=True)
+            await session.stream(payloads, **arguments)
     assert fake.requests == []
 
 
@@ -614,6 +648,101 @@ async def test_realtime_stop(
     assert warnings(caplog)[-1] == (
         "Stopped submitting, because the API returned 401 Unauthorized; 2 payloads stay unsubmitted"
     )
+
+
+@on_real_time
+async def test_destination() -> None:
+    """Each done job's body goes unchanged to `<job_id>.json` before the run yields the job, on Push-Pull and Realtime."""
+    fake = Recorded(
+        lambda payload: Outcome(
+            status="faulted" if "FAULT" in payload["url"] else "done"
+        )
+    )
+    store = MemoryStore()
+    written: dict[str, bool] = {}
+    async with open_async_session(transport=fake) as session:
+        for realtime in (False, True):
+            run = await session.stream(
+                [universal(), universal("FAULT")], realtime=realtime, destination=store
+            )
+            async for job in run:
+                written[job.id] = f"{job.id}.json" in stored(store)
+            assert run.progress.written == 1
+    done = [job_id for job_id, found in written.items() if found]
+    assert len(done) == 2
+    assert stored(store) == {f"{job_id}.json": fake.bodies[job_id] for job_id in done}
+
+
+def test_destination_folder(tmp_path: Path) -> None:
+    """A path or a string without `://` names a local folder that oxy creates and appends to, and a string with `://` names a store."""
+    folder = tmp_path / "results" / "2026"
+    with open_session() as session:
+        first = session.execute(universal("1"), realtime=True, destination=folder).one()
+        second = session.execute(
+            universal("2"), realtime=True, destination=str(folder)
+        ).one()
+        run = session.execute(universal("3"), realtime=True, destination="memory:///")
+        run.one()
+    assert sorted(path.name for path in folder.iterdir()) == [
+        f"{first.id}.json",
+        f"{second.id}.json",
+    ]
+    assert json.loads((folder / f"{second.id}.json").read_bytes()) == {
+        "job": second.data,
+        "results": [result.data for result in second.results],
+    }
+    assert run.progress.written == 1
+
+
+async def test_unreachable_destination(fake: FakeOxylabs) -> None:
+    """A destination that oxy cannot list raises before any request."""
+    async with open_async_session() as session:
+        with pytest.raises(obstore.exceptions.BaseError):
+            await session.stream(universal(), destination="nowhere://bucket")
+    assert fake.requests == []
+
+
+@on_real_time
+async def test_failed_write(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """A failed write stops submission, and the run yields the jobs it already submitted unwritten before it raises."""
+    # The first job's path is a folder, so its write fails.
+    (tmp_path / "7500000000000000001.json").mkdir()
+    fake = FakeOxylabs(
+        lambda payload: Outcome(after=0.5 if "slow" in payload["url"] else 0)
+    )
+    # The first payload takes the whole render budget, so the last two wait for the next window.
+    full = universal(render="html", pages=13)
+    held = [universal("1", render="html"), universal("2", render="html")]
+    async with open_async_session(transport=fake) as session:
+        run = await session.stream(
+            [full, universal("slow"), *held], realtime=True, destination=tmp_path
+        )
+        error = await incomplete(run)
+    assert sorted(job.id for job in error.jobs) == [job["id"] for job in fake.jobs]
+    assert error.unsubmitted == held
+    assert isinstance(error.__cause__, obstore.exceptions.BaseError)
+    assert [path.name for path in tmp_path.iterdir()] == ["7500000000000000001.json"]  # noqa: ASYNC240
+    assert run.progress.written == 0
+    stopped, failed = warnings(caplog)
+    assert failed.startswith(
+        "Writing job 7500000000000000001 to the destination failed, so oxy writes nothing more: "
+    )
+    assert stopped == (
+        "Stopped submitting, because a write to the destination failed; 2 payloads stay unsubmitted"
+    )
+
+
+@on_real_time
+async def test_failed_last_write(tmp_path: Path) -> None:
+    """A failed write raises after the last job even when every payload has a job."""
+    (tmp_path / "7500000000000000001.json").mkdir()
+    async with open_async_session() as session:
+        error = await incomplete(
+            await session.stream(universal(), realtime=True, destination=tmp_path)
+        )
+    assert [job.status for job in error.jobs] == ["done"]
+    assert isinstance(error.__cause__, obstore.exceptions.BaseError)
+    assert str(error) == "the run stopped"
 
 
 @pytest.mark.parametrize(

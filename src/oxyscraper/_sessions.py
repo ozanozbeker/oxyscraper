@@ -12,6 +12,7 @@ import itertools
 import json
 import logging
 import math
+import os
 import random
 import re
 from contextlib import AsyncExitStack, ExitStack
@@ -19,11 +20,14 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from importlib.metadata import version
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
 
 import anyio
 import httpx2
+import obstore
 from anyio.from_thread import start_blocking_portal
+from obstore.store import LocalStore, from_url
 
 from oxyscraper._payloads import _INPUT_KEYS, Payload, _integer, _redacted
 from oxyscraper.testing import _switched_on
@@ -33,6 +37,7 @@ if TYPE_CHECKING:
 
     from anyio.abc import TaskGroup, TaskStatus
     from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+    from obstore.store import ObjectStore
 
 _OutputType = Literal["raw", "parsed", "png", "markdown", "xhr"]
 _Status = Literal["pending", "done", "faulted"]
@@ -230,9 +235,9 @@ class Rejection:
 
 
 class IncompleteRunError(Exception):
-    """The error a run raises after its last job, when a payload ended with no done or faulted job.
+    """The error a run raises after its last job, when a payload ended with no done or faulted job, or a failure stopped the run.
 
-    Its `__cause__` is the `OxylabsError` that stopped the run, if one did.
+    Its `__cause__` is the `OxylabsError` or the failed write that stopped the run, if one did.
 
     Attributes
     ----------
@@ -265,6 +270,7 @@ class IncompleteRunError(Exception):
         }
         super().__init__(
             ", ".join(f"{count} {state}" for state, count in counts.items() if count)
+            or "the run stopped"
         )
         self.rejections = rejections
         self.unsubmitted = unsubmitted
@@ -352,10 +358,11 @@ class _RunState:
     waiting: anyio.Semaphore
     realtime: bool
     output_types: Sequence[_OutputType]
+    destination: ObjectStore | None
     # Cancelling `submitting` stops submission, and cancelling `running` stops the checks too.
     submitting: anyio.CancelScope = field(default_factory=anyio.CancelScope)
     running: anyio.CancelScope = field(default_factory=anyio.CancelScope)
-    cause: OxylabsError | None = None
+    cause: Exception | None = None
     started: float = field(default_factory=anyio.current_time)
     ended: float | None = None
     retries: int = 0
@@ -388,14 +395,36 @@ class _RunState:
         if line.job:
             _logger.debug("Job %s is %s: %r", line.job.id, state, line.payload)
 
-    def finish(self, line: _Line, job: Job) -> None:
-        """Record a finished job, and send it to the caller's loop, for which it holds a `waiting` slot."""
+    async def finish(self, line: _Line, job: Job, body: bytes | None) -> None:
+        """Record a finished job, write a done one's `body` to the destination, and send it to the caller's loop, for which it holds a `waiting` slot."""
         line.job = job
         self.move(line, job.status)
         if job.status == "faulted":
             _logger.warning("Job %s faulted: %s %s", job.id, job.source, job.input)
+        elif self.destination is not None and body is not None:
+            await self.write(self.destination, job.id, body)
         # `send` checks for cancellation first, so a stop would lose the fetched job.
         self.send.send_nowait(job)
+
+    async def write(self, store: ObjectStore, job_id: str, body: bytes) -> None:
+        """Write a job's body, or stop submission and every later write if the write fails."""
+        # A stop waits for the write, so the job still reaches the caller's loop.
+        with anyio.CancelScope(shield=True):
+            try:
+                await anyio.to_thread.run_sync(
+                    obstore.put, store, f"{job_id}.json", body
+                )
+            # obstore raises its own errors, and a store's credential provider may raise anything.
+            except Exception as error:  # noqa: BLE001
+                self.destination = None
+                _logger.warning(
+                    "Writing job %s to the destination failed, so oxy writes nothing more: %s",
+                    job_id,
+                    error,
+                )
+                self.stop(error, self.submitting)
+                return
+        self.snapshot = replace(self.snapshot, written=self.snapshot.written + 1)
 
     def progress(self) -> Progress:
         end = anyio.current_time() if self.ended is None else self.ended
@@ -405,7 +434,7 @@ class _RunState:
             elapsed=timedelta(seconds=end - self.started),
         )
 
-    def stop(self, error: OxylabsError, scope: anyio.CancelScope) -> None:
+    def stop(self, error: Exception, scope: anyio.CancelScope) -> None:
         self.cause = self.cause or error
         scope.cancel()
 
@@ -451,7 +480,7 @@ class _RunState:
         unfetched = [
             line.job for line in self.lines if line.state == "unfetched" and line.job
         ]
-        if not (rejections or unsubmitted or unfetched):
+        if not (rejections or unsubmitted or unfetched) and self.cause is None:
             return None
         return IncompleteRunError(
             rejections=rejections,
@@ -707,13 +736,19 @@ class AsyncSession:
         payloads: Payload | Iterable[Payload],
         *,
         realtime: bool = False,
+        destination: str | os.PathLike[str] | ObjectStore | None = None,
         output_types: Sequence[_OutputType] = (),
     ) -> Run:
         """Run the payloads, and return the run once its last job finishes.
 
         It takes the arguments of `stream`.
         """
-        run = await self.stream(payloads, realtime=realtime, output_types=output_types)
+        run = await self.stream(
+            payloads,
+            realtime=realtime,
+            destination=destination,
+            output_types=output_types,
+        )
         return Run(iter(await run.all()), lambda: run.progress)
 
     async def stream(
@@ -721,6 +756,7 @@ class AsyncSession:
         payloads: Payload | Iterable[Payload],
         *,
         realtime: bool = False,
+        destination: str | os.PathLike[str] | ObjectStore | None = None,
         output_types: Sequence[_OutputType] = (),
     ) -> AsyncRun:
         """Start a run, and return its jobs as they finish.
@@ -732,6 +768,12 @@ class AsyncSession:
         realtime
             Submit each payload through Realtime, one request per payload, instead of Push-Pull.
             oxy never falls back from one integration method to the other.
+        destination
+            The folder that oxy writes each done job's body to, unchanged, as `<job_id>.json`, before the run yields the job.
+            oxy passes a string with `://` to `obstore.store.from_url`, which reads credentials from the environment as Polars does.
+            Any other string or path names a local folder, which oxy creates.
+            Pass a store for explicit credentials or settings.
+            A failed write stops submission and every later write.
         output_types
             The output types of each result, sent as the API's `type` parameter.
             Empty returns the default type of each job.
@@ -739,12 +781,23 @@ class AsyncSession:
         Raises
         ------
         ValueError
-            If `realtime` is set and a payload sets `storage_type`.
+            If `realtime` or `destination` is set and a payload sets `storage_type`.
+        obstore.exceptions.BaseError
+            If oxy cannot list `destination`.
         """
         lines = [_Line(payload) for payload in _listed(payloads)]
-        if realtime and any("storage_type" in line.body for line in lines):
+        uploads = any("storage_type" in line.body for line in lines)
+        if realtime and uploads:
             msg = "a payload that sets storage_type runs only through Push-Pull, so call without realtime=True"
             raise ValueError(msg)
+        if destination is not None and uploads:
+            msg = "oxy fetches no results for a payload that sets storage_type, so call without destination="
+            raise ValueError(msg)
+        store = (
+            None
+            if destination is None
+            else await anyio.to_thread.run_sync(_store, destination)
+        )
         send, receive = anyio.create_memory_object_stream[Job](math.inf)
         self._streams.callback(receive.close)
         state = _RunState(
@@ -754,6 +807,7 @@ class AsyncSession:
             waiting=anyio.Semaphore(_MAX_WAITING),
             realtime=realtime,
             output_types=output_types,
+            destination=store,
         )
         self._tasks.start_soon(self._run, state)
         return AsyncRun(receive, state)
@@ -778,9 +832,9 @@ class AsyncSession:
             If the API returns an error, or a network failure lasts past the retry limit.
         """
         fetched = await self._results(job_id, output_types)
-        if isinstance(fetched, Job):
-            return fetched
-        return await self._status(job_id, fetched)
+        if isinstance(fetched, str):
+            return await self._status(job_id, fetched)
+        return fetched[0]
 
     async def _run(self, state: _RunState) -> None:
         _logger.info(
@@ -911,12 +965,13 @@ class AsyncSession:
         task_status.started()
         state.move(line, "pending")
 
-        def read(response: httpx2.Response) -> Job:
+        def read(response: httpx2.Response) -> tuple[Job, bytes]:
             body = response.json()
-            return _job(body["job"], body["results"], payload=line.payload)
+            job = _job(body["job"], body["results"], payload=line.payload)
+            return job, response.content
 
         try:
-            job = await self._request(
+            job, body = await self._request(
                 "POST",
                 _REALTIME,
                 read,
@@ -941,7 +996,7 @@ class AsyncSession:
                 state.move(line, "unsubmitted")
                 state.stop(error, state.submitting)
             return
-        state.finish(line, job)
+        await state.finish(line, job, body)
 
     def _match(
         self,
@@ -1013,14 +1068,13 @@ class AsyncSession:
             await anyio.sleep_until(accepted + age)
             await state.waiting.acquire()
             try:
-                fetched = await self._results(
+                fetched: tuple[Job, bytes | None] | str = await self._results(
                     pending.id, state.output_types, line.payload, state
                 )
                 # A faulted job can have no results, so its 204 names its status alone.
                 if isinstance(fetched, str) and fetched != "pending":
-                    fetched = await self._status(
-                        pending.id, fetched, line.payload, state
-                    )
+                    job = await self._status(pending.id, fetched, line.payload, state)
+                    fetched = job, None
             except OxylabsError as error:
                 state.waiting.release()
                 if error.status_code in _UNAUTHORIZED:
@@ -1035,8 +1089,8 @@ class AsyncSession:
                     pending.input,
                 )
                 return
-            if isinstance(fetched, Job):
-                state.finish(line, fetched)
+            if isinstance(fetched, tuple):
+                await state.finish(line, *fetched)
                 return
             state.waiting.release()
             limit = self._pending_limit
@@ -1057,14 +1111,14 @@ class AsyncSession:
         output_types: Sequence[_OutputType],
         payload: Payload | None = None,
         state: _RunState | None = None,
-    ) -> Job | str:
-        """Fetch a job with its results, or the status that a 204 names for a job with none."""
+    ) -> tuple[Job, bytes] | str:
+        """Fetch a job with its results and the body that holds them, or the status that a 204 names for a job with none."""
 
-        def read(response: httpx2.Response) -> Job | str:
+        def read(response: httpx2.Response) -> tuple[Job, bytes] | str:
             if response.status_code == httpx2.codes.NO_CONTENT:
                 return response.headers["x-oxylabs-job-status"]
             body = response.json()
-            return _job(body["job"], body["results"], payload=payload)
+            return _job(body["job"], body["results"], payload=payload), response.content
 
         return await self._request(
             "GET",
@@ -1254,6 +1308,7 @@ class Session:
         payloads: Payload | Iterable[Payload],
         *,
         realtime: bool = False,
+        destination: str | os.PathLike[str] | ObjectStore | None = None,
         output_types: Sequence[_OutputType] = (),
     ) -> Run:
         """Start a run, and return its jobs as they finish.
@@ -1265,6 +1320,7 @@ class Session:
                 self._session.stream,
                 payloads,
                 realtime=realtime,
+                destination=destination,
                 output_types=output_types,
             )
         )
@@ -1341,6 +1397,19 @@ def dry_run(payloads: Payload | Iterable[Payload]) -> DryRun:
         jobs=jobs,
         max_results=sum(_pages(job) for job in jobs),
     )
+
+
+def _store(destination: str | os.PathLike[str] | ObjectStore) -> ObjectStore:
+    """Return the store that `destination` names, after listing one page of it."""
+    if isinstance(destination, str) and "://" in destination:
+        store = from_url(destination)
+    elif isinstance(destination, str | os.PathLike):  # pyrefly: ignore[implicit-any-type-argument]
+        store = LocalStore(Path(destination), mkdir=True)
+    else:
+        store = destination
+    # A store that oxy cannot reach raises here, before any request bills.
+    next(iter(obstore.list(store, chunk_size=1)), None)
+    return store
 
 
 def _listed(payloads: Payload | Iterable[Payload]) -> list[Payload]:
@@ -1438,7 +1507,9 @@ def _unknown(error: OxylabsError) -> bool:
     return error.status_code >= httpx2.codes.INTERNAL_SERVER_ERROR
 
 
-def _because(error: OxylabsError) -> str:
+def _because(error: Exception) -> str:
+    if not isinstance(error, OxylabsError):
+        return "a write to the destination failed"
     if error.status_code is None:
         return f"httpx2 raised {error}"
     return f"the API returned {error}"

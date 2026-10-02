@@ -18,4 +18,11 @@ site:
 user_guide:
   - section: Guide
     contents:
+      - payloads.qmd
+      - sessions.qmd
+      - failures.qmd
+      - destinations.qmd
+      - cloud-storage.qmd
+      - testing.qmd
+      - cli.qmd
       - upgrading.qmd

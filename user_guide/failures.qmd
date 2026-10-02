@@ -1,0 +1,146 @@
+---
+title: Failures
+---
+
+{{< include _includes/setup.qmd >}}
+
+```{python}
+#| include: false
+import math
+
+from oxyscraper.testing import Outcome
+
+
+faulted_once: set[str] = set()
+
+
+def outcome(payload: dict[str, str]) -> Outcome:
+    url = payload["url"]
+    if url.endswith("/2") and url not in faulted_once:
+        faulted_once.add(url)
+        return Outcome(status="faulted")
+    if url.endswith("/3"):
+        return Outcome(after=math.inf)
+    if url.endswith("/missing"):
+        return Outcome(status_code=404)
+    return Outcome()
+
+
+fake = ExitStack().enter_context(FakeOxylabs(outcome))
+```
+
+A run reports what happened to every payload.
+It yields each done or faulted job, and raises one `IncompleteRunError` after its last job if any payload ended without one.
+
+## A run with failures
+
+Here Oxylabs faults the second job, the third job never finishes, and the API rejects the fourth URL for free.
+A short `pending_limit` makes oxy stop checking the third job after 5 seconds instead of 10 minutes:
+
+```{python}
+import os
+
+import oxyscraper as oxy
+
+USERNAME = os.environ["OXY_WSA_USERNAME"]
+PASSWORD = os.environ["OXY_WSA_PASSWORD"]
+
+payloads = [
+    oxy.Universal(url=f"https://sandbox.oxylabs.io/products/{number}")
+    for number in range(1, 4)
+]
+payloads.append(oxy.Universal(url="https://10.0.0.1/"))
+
+faulted = []
+with oxy.Session(username=USERNAME, password=PASSWORD, pending_limit=5) as session:
+    run = session.execute(payloads)
+    try:
+        for job in run:
+            print(job.status, job.input)
+            if job.status == "faulted":
+                faulted.append(job.payload)
+    except oxy.IncompleteRunError as error:
+        print(error)
+        for rejection in error.rejections:
+            print(rejection.status_code, rejection.message, rejection.payload.url)
+        for job in error.unfetched:
+            print(job.id, job.status, job.input)
+```
+
+## Faulted jobs
+
+A faulted job is one that Oxylabs could not complete, even after retrying it, and it bills nothing.
+The run yields it with `status="faulted"`, and a run whose only problem is faulted jobs ends without raising.
+The run never resubmits a faulted job, so you choose whether a resubmission is worth the wait:
+
+```{python}
+with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+    for job in session.execute(faulted):
+        print(job.status, job.input)
+```
+
+## The lists of `IncompleteRunError`
+
+The error carries one list for each way a payload can end without a done or faulted job:
+
+- `rejections` holds one `Rejection` per payload that the API rejected, with its `status_code`, `message` and `trace_id`.
+  A 400, a 422, an entry in a batch's `errors` and a Realtime 408 each reject their payload, and the run carries on.
+  A payload rejected inside a batch carries the batch's 202, as the fourth URL above does.
+- `unsubmitted` holds the payloads that a stop left unsent.
+- `unfetched` holds the jobs that oxy stopped checking, each pending and with no results.
+  `session.get` fetches one later.
+- `unuploaded` holds the jobs whose Cloud Storage upload failed.
+- `jobs` holds the jobs that `all()` collected before it raised.
+
+At the end, `run.progress` counts the same payloads:
+
+```{python}
+print(run.progress)
+```
+
+## Errors that stop a run
+
+A 401, a 403, the domain throttle, a submission out of retries and a failed write to the destination each stop submission.
+The run still checks the jobs that the API accepted and yields them, then raises `IncompleteRunError`.
+Its `__cause__` is the `OxylabsError` that stopped the run, and the payloads it never sent are in `unsubmitted`.
+
+`OxylabsError` carries the `status_code`, `message` and `trace_id` of one error response, which Oxylabs support asks for.
+`get` raises it directly:
+
+```{python}
+try:
+    with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+        session.get("7500000000000000999")
+except oxy.OxylabsError as error:
+    print(error.status_code, error.message)
+```
+
+## Retries
+
+Each request retries after a 429, any 5xx or a network error.
+Each wait is random, between 0 and a ceiling that starts at 1 second and doubles up to 30 seconds.
+A request stops retrying `retry_limit` seconds after its first failure, 600 by default.
+A check that runs out of retries moves only its own job into `unfetched`.
+
+The API has no idempotency key, so a submission retried after a 5xx or a read error may create a second job that bills.
+Each such retry writes a WARNING line.
+
+## Results that are not failures
+
+A done job whose page returned a 4xx stays done and bills.
+Each `Result` holds the target's `status_code`, so check it when a 404 matters:
+
+```{python}
+with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+    job = session.execute(
+        oxy.Universal(url="https://sandbox.oxylabs.io/products/missing")
+    ).one()
+
+job.status, job.results[0].status_code
+```
+
+## Stopping a run
+
+Ctrl+C, a `break` out of the loop or leaving the `with` block stops the run.
+Each submission that oxy already sent finishes, so the run log records the ID of every job that may bill.
+A second Ctrl+C stops at once, without the run log.

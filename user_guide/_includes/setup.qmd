@@ -1,0 +1,14 @@
+```{python}
+#| include: false
+import os
+import tempfile
+from contextlib import ExitStack
+
+from oxyscraper.testing import FakeOxylabs
+
+# Every example runs against the fake, so the build needs no credentials and bills nothing.
+fake = ExitStack().enter_context(FakeOxylabs())
+os.environ["OXY_WSA_USERNAME"] = "USERNAME"
+os.environ["OXY_WSA_PASSWORD"] = "PASSWORD"
+os.chdir(tempfile.mkdtemp())
+```

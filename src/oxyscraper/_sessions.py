@@ -123,7 +123,9 @@ class Upload:
     storage_url
         The object's path, which the API resolved from the payload's `storage_url`.
     code
-        The code of the first entry in the job's `statuses`, where 13000 means success, or `None` while no entry exists.
+        The code of the first entry in the job's `statuses`, where 13000 means success.
+        `None` means no entry appeared before the pending limit, or the job object has no `statuses`, which holds for the sources whose job object is the payload alone.
+        oxy cannot check those uploads, so it counts them neither as uploaded nor as unuploaded.
     message
         That entry's message.
     """
@@ -236,7 +238,7 @@ class Rejection:
 
 
 class IncompleteRunError(Exception):
-    """The error a run raises after its last job, when a payload ended with no done or faulted job, or a failure stopped the run.
+    """The error a run raises after its last job, when a payload ended with no done or faulted job, an upload failed, or a failure stopped the run.
 
     Its `__cause__` is the `OxylabsError` or the failed write that stopped the run, if one did.
 
@@ -335,6 +337,7 @@ class Progress:
 
 
 _State = Literal["unsubmitted", "pending", "done", "faulted", "rejected", "unfetched"]
+_ENDED = frozenset({"done", "faulted", "rejected", "unfetched"})
 
 
 class _Shields:
@@ -370,6 +373,7 @@ class _Line:
     rejection: Rejection | None = None
     # The error that left the payload unsubmitted or unfetched.
     error: Exception | None = None
+    ended: anyio.Event = field(default_factory=anyio.Event, repr=False)
 
     def __post_init__(self) -> None:
         self.body = self.payload.model_dump()
@@ -393,6 +397,7 @@ class _RunState:
     send: MemoryObjectSendStream[Job]
     waiting: anyio.Semaphore
     realtime: bool
+    check_storage: bool
     output_types: Sequence[_OutputType]
     destination: ObjectStore | None
     log: _RunLog | None
@@ -404,6 +409,8 @@ class _RunState:
     started: float = field(default_factory=anyio.current_time)
     ended: float | None = None
     retries: int = 0
+    # The `storage_url` values whose uploads oxy warned it cannot check.
+    unchecked: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.snapshot = Progress(
@@ -430,6 +437,8 @@ class _RunState:
         changes = {line.state: old - 1, state: new + 1}
         line.state = state
         self.snapshot = replace(self.snapshot, **changes)
+        if state in _ENDED:
+            line.ended.set()
         if line.job:
             _logger.debug("Job %s is %s: %r", line.job.id, state, line.payload)
 
@@ -441,8 +450,36 @@ class _RunState:
             _logger.warning("Job %s faulted: %s %s", job.id, job.source, job.input)
         elif self.destination is not None and body is not None:
             await self.write(self.destination, job.id, body)
+        if job.upload is not None:
+            self.count(line, job, job.upload)
         # `send` checks for cancellation first, so a stop would lose the fetched job.
         self.send.send_nowait(job)
+
+    def count(self, line: _Line, job: Job, upload: Upload) -> None:
+        """Count a finished job's upload as uploaded or unuploaded, unless its job object cannot show the upload's outcome."""
+        if "statuses" not in job.data:
+            storage_url = line.body["storage_url"]
+            if storage_url not in self.unchecked:
+                self.unchecked.add(storage_url)
+                _logger.warning(
+                    "Cannot check the uploads to %s, because the job object of %s has no statuses",
+                    _redacted(line.body)["storage_url"],
+                    job.source,
+                )
+            return
+        if not _upload_failed(job):
+            self.snapshot = replace(self.snapshot, uploaded=self.snapshot.uploaded + 1)
+            return
+        self.snapshot = replace(self.snapshot, unuploaded=self.snapshot.unuploaded + 1)
+        if upload.code is not None:
+            _logger.warning(
+                "The upload of job %s failed with %s %s: %s %s",
+                job.id,
+                upload.code,
+                upload.message,
+                job.source,
+                job.input,
+            )
 
     async def write(self, store: ObjectStore, job_id: str, body: bytes) -> None:
         """Write a job's body, or stop submission and every later write if the write fails."""
@@ -548,13 +585,19 @@ class _RunState:
         unfetched = [
             line.job for line in self.lines if line.state == "unfetched" and line.job
         ]
-        if not (rejections or unsubmitted or unfetched) and self.cause is None:
+        unuploaded = [
+            line.job for line in self.lines if line.job and _upload_failed(line.job)
+        ]
+        if (
+            not (rejections or unsubmitted or unfetched or unuploaded)
+            and self.cause is None
+        ):
             return None
         return IncompleteRunError(
             rejections=rejections,
             unsubmitted=unsubmitted,
             unfetched=unfetched,
-            unuploaded=[],
+            unuploaded=unuploaded,
         )
 
 
@@ -618,7 +661,7 @@ class Run:
     """The jobs of one run, each as it finishes.
 
     Iteration yields each job once, so `all`, `one` and `partitions` return only the jobs it has not yet yielded.
-    After the last job, it raises `IncompleteRunError` if a payload ended with no done or faulted job, and raises it again on each later call.
+    After the last job, it raises `IncompleteRunError` if a payload ended with no done or faulted job or an upload failed, and raises it again on each later call.
     """
 
     def __init__(self, jobs: Iterator[Job], progress: Callable[[], Progress]) -> None:
@@ -640,7 +683,7 @@ class Run:
         Raises
         ------
         IncompleteRunError
-            If a payload ended with no done or faulted job, with the jobs collected so far in its `jobs`.
+            If a payload ended with no done or faulted job or an upload failed, with the jobs collected so far in its `jobs`.
         """
         jobs: list[Job] = []
         try:
@@ -813,13 +856,14 @@ class AsyncSession:
         finally:
             await self._stack.aclose()
 
-    async def execute(
+    async def execute(  # noqa: PLR0913
         self,
         payloads: Payload | Iterable[Payload],
         *,
         realtime: bool = False,
         destination: str | os.PathLike[str] | ObjectStore | None = None,
         run_log: str | os.PathLike[str] | ObjectStore | None = None,
+        check_storage: bool = True,
         output_types: Sequence[_OutputType] = (),
     ) -> Run:
         """Run the payloads, and return the run once its last job finishes.
@@ -831,17 +875,19 @@ class AsyncSession:
             realtime=realtime,
             destination=destination,
             run_log=run_log,
+            check_storage=check_storage,
             output_types=output_types,
         )
         return Run(iter(await run.all()), lambda: run.progress)
 
-    async def stream(
+    async def stream(  # noqa: PLR0913
         self,
         payloads: Payload | Iterable[Payload],
         *,
         realtime: bool = False,
         destination: str | os.PathLike[str] | ObjectStore | None = None,
         run_log: str | os.PathLike[str] | ObjectStore | None = None,
+        check_storage: bool = True,
         output_types: Sequence[_OutputType] = (),
     ) -> AsyncRun:
         """Start a run, and return its jobs as they finish.
@@ -864,6 +910,11 @@ class AsyncSession:
             It takes the same types as `destination`.
             oxy writes an empty file before the first submission, and replaces it when the run ends or stops.
             So an empty file means a second Ctrl+C or a killed process, and jobs may have billed without a record.
+        check_storage
+            Submit the first payload of each `storage_url` alone, and hold the rest of that `storage_url` until the first upload succeeds, so a wrong bucket bills one job.
+            If that upload fails, the held payloads stay unsubmitted.
+            A job object without `statuses` cannot show the upload, so the rest go out once the first job finishes.
+            `False` submits every payload at once, and oxy still checks each upload.
         output_types
             The output types of each result, sent as the API's `type` parameter.
             Empty returns the default type of each job.
@@ -904,6 +955,7 @@ class AsyncSession:
             # A finished job holds a slot until the caller's loop takes it, so at most 100 wait in memory.
             waiting=anyio.Semaphore(_MAX_WAITING),
             realtime=realtime,
+            check_storage=check_storage,
             output_types=output_types,
             destination=store,
             log=log,
@@ -984,8 +1036,67 @@ class AsyncSession:
             for line in state.lines:
                 await submissions.start(self._call, state, line)
             return
-        for lines in _groups(state.lines):
-            await self._dispatch(state, lines, checks, submissions)
+        lines = state.lines
+        if state.check_storage:
+            shared: collections.defaultdict[str, list[_Line]] = collections.defaultdict(
+                list
+            )
+            for line in lines:
+                if "storage_url" in line.body:
+                    shared[line.body["storage_url"]].append(line)
+            checked = [group for group in shared.values() if len(group) > 1]
+            held = {line for group in checked for line in group}
+            lines = [line for line in lines if line not in held]
+            for group in checked:
+                submissions.start_soon(self._probe, state, group, checks, submissions)
+        for group in _groups(lines):
+            await self._dispatch(state, group, checks, submissions)
+
+    async def _probe(
+        self,
+        state: _RunState,
+        lines: Sequence[_Line],
+        checks: TaskGroup,
+        submissions: TaskGroup,
+    ) -> None:
+        """Submit the first payload of a `storage_url` alone, and the rest once its upload succeeds.
+
+        A rejected payload has no upload, so the next payload takes its place.
+        """
+        shown = _redacted(lines[0].body)["storage_url"]
+        _logger.info(
+            "Checking the upload to %s with one job before submitting %s",
+            shown,
+            _counted(len(lines) - 1, "more payload"),
+        )
+        started = anyio.current_time()
+        rest = collections.deque(lines)
+        while rest:
+            first = rest.popleft()
+            await self._dispatch(state, [first], checks, submissions)
+            await first.ended.wait()
+            if first.state != "rejected":
+                break
+        if first.state == "unfetched":
+            reason = "oxy stopped checking the first job"
+        elif first.job and _upload_failed(first.job):
+            reason = "the first upload failed"
+        else:
+            if first.job and "statuses" in first.job.data:
+                _logger.info(
+                    "Uploaded the first job to %s in %s",
+                    shown,
+                    _duration(anyio.current_time() - started),
+                )
+            for group in _groups(rest):
+                await self._dispatch(state, group, checks, submissions)
+            return
+        _logger.warning(
+            "Held back %s for %s, because %s",
+            _counted(len(rest), "payload"),
+            shown,
+            reason,
+        )
 
     async def _dispatch(
         self,
@@ -1182,13 +1293,7 @@ class AsyncSession:
             await anyio.sleep_until(accepted + age)
             await state.waiting.acquire()
             try:
-                fetched: tuple[Job, bytes | None] | str = await self._results(
-                    pending.id, state.output_types, line.payload, state
-                )
-                # A faulted job can have no results, so its 204 names its status alone.
-                if isinstance(fetched, str) and fetched != "pending":
-                    job = await self._status(pending.id, fetched, line.payload, state)
-                    fetched = job, None
+                fetched = await self._fetch(state, line, pending.id)
             except OxylabsError as error:
                 state.waiting.release()
                 if error.status_code in _UNAUTHORIZED:
@@ -1204,12 +1309,23 @@ class AsyncSession:
                     pending.input,
                 )
                 return
+            limit = self._pending_limit
+            expired = limit is not None and anyio.current_time() >= accepted + limit
             if isinstance(fetched, tuple):
                 await state.finish(line, *fetched)
                 return
+            if fetched is not None and limit is not None and expired:
+                _logger.warning(
+                    "Cloud Storage recorded no upload for job %s within %s: %s %s",
+                    pending.id,
+                    _duration(limit),
+                    pending.source,
+                    pending.input,
+                )
+                await state.finish(line, fetched, None)
+                return
             state.waiting.release()
-            limit = self._pending_limit
-            if limit is not None and anyio.current_time() >= accepted + limit:
+            if limit is not None and expired:
                 state.move(line, "unfetched")
                 _logger.warning(
                     "Stopped checking job %s, because it is still pending after %s: %s %s",
@@ -1219,6 +1335,27 @@ class AsyncSession:
                     pending.input,
                 )
                 return
+
+    async def _fetch(
+        self, state: _RunState, line: _Line, job_id: str
+    ) -> tuple[Job, bytes | None] | Job | None:
+        """Return a finished job with the body that holds its results, a finished job alone while its upload has no `statuses` entry, or `None` while it is pending.
+
+        A job with `storage_type` has no body, so oxy reads the status endpoint instead of downloading results twice.
+        """
+        if "storage_type" in line.body:
+            job = await self._status(job_id, None, line.payload, state)
+            if job.status == "pending":
+                return None
+            # The entry appears seconds after the final status.
+            return job if job.data.get("statuses") == [] else (job, None)
+        fetched = await self._results(job_id, state.output_types, line.payload, state)
+        if fetched == "pending":
+            return None
+        # A faulted job can have no results, so its 204 names its status alone.
+        if isinstance(fetched, str):
+            return await self._status(job_id, fetched, line.payload, state), None
+        return fetched
 
     async def _results(
         self,
@@ -1246,11 +1383,11 @@ class AsyncSession:
     async def _status(
         self,
         job_id: str,
-        status: str,
+        status: str | None,
         payload: Payload | None = None,
         state: _RunState | None = None,
     ) -> Job:
-        """Fetch a job with no results from the status endpoint, with the status that its 204 named."""
+        """Fetch a job with no results from the status endpoint, with the status that its 204 named, if one did."""
         return await self._request(
             "GET",
             f"{_DATA}/{job_id}",
@@ -1420,13 +1557,14 @@ class Session:
         """Stop every unfinished run, and close the portal."""
         self._stack.close()
 
-    def execute(
+    def execute(  # noqa: PLR0913
         self,
         payloads: Payload | Iterable[Payload],
         *,
         realtime: bool = False,
         destination: str | os.PathLike[str] | ObjectStore | None = None,
         run_log: str | os.PathLike[str] | ObjectStore | None = None,
+        check_storage: bool = True,
         output_types: Sequence[_OutputType] = (),
     ) -> Run:
         """Start a run, and return its jobs as they finish.
@@ -1440,6 +1578,7 @@ class Session:
                 realtime=realtime,
                 destination=destination,
                 run_log=run_log,
+                check_storage=check_storage,
                 output_types=output_types,
             )
         )
@@ -1619,12 +1758,13 @@ def _record(line: _Line) -> dict[str, Any]:
             "message": f"{type(error).__name__}: {error}",
             "trace_id": None,
         }
+    upload = line.job.upload if line.job else None
     return {
         "state": line.state,
         "id": line.job and line.job.id,
         "payload": _redacted(line.body),
         "error": reported,
-        "upload": None,
+        "upload": upload and {"code": upload.code, "message": upload.message},
     }
 
 
@@ -1754,6 +1894,16 @@ def _upload(data: dict[str, Any]) -> Upload:
         storage_url=data["storage_url"],
         code=entry.get("code"),
         message=entry.get("message"),
+    )
+
+
+def _upload_failed(job: Job) -> bool:
+    """Return whether a finished job's upload failed, which a job object without `statuses` never shows."""
+    return (
+        job.status != "pending"
+        and job.upload is not None
+        and "statuses" in job.data
+        and job.upload.code != 13000  # noqa: PLR2004
     )
 
 

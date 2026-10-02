@@ -468,17 +468,188 @@ async def test_get_expired() -> None:
     assert expired.finished_at == done.finished_at == START + timedelta(seconds=2)
 
 
+def stored_universal(path: str = "", **fields: Any) -> oxy.Payload:
+    return universal(path, storage_type="gcs", storage_url="gs://bucket/path", **fields)
+
+
 @on_mock_clock
-async def test_upload() -> None:
-    """A job with `storage_type` carries its upload's path, code and message."""
-    payload = universal(storage_type="gcs", storage_url="gs://bucket/path")
+async def test_upload(fake: FakeOxylabs) -> None:
+    """A job with `storage_type` is checked on the status endpoint alone, and the run yields it with its upload and no results."""
     async with open_async_session() as session:
-        job = (await session.execute(payload)).one()
+        run = await session.stream(stored_universal())
+        [job] = await run.all()
     assert job.upload == oxy.Upload(
         storage_url=f"gs://bucket/path/{job.id}.json",
         code=13000,
         message="Upload Successful",
     )
+    assert (job.status, job.results) == ("done", [])
+    assert checks(fake) == 0
+    assert (run.progress.uploaded, run.progress.unuploaded) == (1, 0)
+
+
+@on_mock_clock
+@pytest.mark.parametrize(
+    ("status", "code", "message"),
+    [
+        ("done", 10001, "Unexpected Exception"),
+        ("done", 13001, "Upload Failed"),
+        ("done", 13102, "No such path"),
+        ("faulted", 13103, "Access Denied"),
+    ],
+)
+async def test_failed_upload(
+    caplog: pytest.LogCaptureFixture,
+    status: Literal["done", "faulted"],
+    code: int,
+    message: str,
+) -> None:
+    """Any code but 13000 moves the job into `unuploaded`, and the run yields it and raises."""
+    fake = FakeOxylabs(Outcome(status=status, upload=code))
+    payload = stored_universal()
+    async with open_async_session(transport=fake) as session:
+        run = await session.stream(payload)
+        error = await incomplete(run)
+    [job] = error.jobs
+    assert error.unuploaded == [job]
+    assert (job.status, job.upload and job.upload.code) == (status, code)
+    assert (run.progress.uploaded, run.progress.unuploaded) == (0, 1)
+    assert (
+        f"The upload of job {job.id} failed with {code} {message}: universal {payload.url}"
+        in warnings(caplog)
+    )
+
+
+@on_mock_clock
+async def test_late_upload() -> None:
+    """A finished job stays pending until its `statuses` entry appears."""
+    fake = FakeOxylabs(Outcome(upload_after=18))
+    async with open_async_session(transport=fake) as session:
+        run = await session.stream(stored_universal())
+        await anyio.sleep(17)
+        middle = run.progress
+        [job] = await run.all()
+    assert (middle.pending, middle.done) == (1, 0)
+    assert job.upload
+    assert job.upload.code == 13000
+    assert run.progress.elapsed == timedelta(seconds=20)
+
+
+@on_mock_clock
+async def test_upload_without_entry(caplog: pytest.LogCaptureFixture) -> None:
+    """A finished job with no `statuses` entry at the pending limit counts as a failed upload."""
+    fake = FakeOxylabs(Outcome(upload=None))
+    payload = stored_universal()
+    async with open_async_session(transport=fake, pending_limit=30) as session:
+        run = await session.stream(payload)
+        error = await incomplete(run)
+    [job] = error.unuploaded
+    assert error.jobs == [job]
+    assert (job.status, job.upload and job.upload.code) == ("done", None)
+    assert run.progress == dataclasses.replace(
+        progress(done=1, unuploaded=1), elapsed=timedelta(seconds=30)
+    )
+    assert warnings(caplog) == [
+        f"Cloud Storage recorded no upload for job {job.id} within 30.00s: universal {payload.url}"
+    ]
+
+
+@on_mock_clock
+async def test_unchecked_upload(caplog: pytest.LogCaptureFixture) -> None:
+    """A job object without `statuses` leaves its upload unchecked, with one warning per `storage_url`."""
+    payloads = [
+        oxy.Payload(
+            source="walmart_product",
+            product_id=product_id,
+            storage_type="gcs",
+            storage_url="gs://bucket/path",
+        )
+        for product_id in ("1", "2")
+    ]
+    async with open_async_session() as session:
+        run = await session.stream(payloads)
+        jobs = await run.all()
+    assert {job.upload and job.upload.code for job in jobs} == {None}
+    assert run.progress == dataclasses.replace(
+        progress(done=2), elapsed=run.progress.elapsed
+    )
+    assert warnings(caplog) == [
+        "Cannot check the uploads to gs://bucket/path, because the job object of walmart_product has no statuses"
+    ]
+
+
+def created(fake: FakeOxylabs) -> list[float]:
+    """Return the second each job was created, counted from the fake's start."""
+    return [
+        (datetime.fromisoformat(job["created_at"]).replace(tzinfo=UTC) - START).seconds
+        for job in fake.jobs
+    ]
+
+
+@on_mock_clock
+async def test_check_storage(caplog: pytest.LogCaptureFixture) -> None:
+    """`check_storage` submits the first payload of a `storage_url` alone, and the rest once its upload succeeds."""
+    caplog.set_level(logging.INFO, "oxyscraper")
+    fake = FakeOxylabs(Outcome(upload_after=5))
+    payloads = [stored_universal(str(page)) for page in range(3)]
+    async with open_async_session(transport=fake) as session:
+        await session.execute([*payloads, universal("other")])
+    assert created(fake) == [0, 0, 5, 5]
+    assert lines(caplog, logging.INFO)[1:3] == [
+        "Checking the upload to gs://bucket/path with one job before submitting 2 more payloads",
+        "Uploaded the first job to gs://bucket/path in 5.00s",
+    ]
+
+
+@on_mock_clock
+async def test_without_check_storage(fake: FakeOxylabs) -> None:
+    """`check_storage=False` submits every payload at once, and still checks each upload."""
+    payloads = [stored_universal(str(page)) for page in range(3)]
+    async with open_async_session() as session:
+        run = await session.stream(payloads, check_storage=False)
+        await run.all()
+    assert submissions(fake) == 1
+    assert run.progress.uploaded == 3
+
+
+@on_mock_clock
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        (Outcome(upload=13103), "the first upload failed"),
+        (Outcome(after=math.inf), "oxy stopped checking the first job"),
+    ],
+)
+async def test_first_upload_fails(
+    caplog: pytest.LogCaptureFixture, outcome: Outcome, reason: str
+) -> None:
+    """When the first upload of a `storage_url` fails, the rest of its payloads stay unsubmitted."""
+    fake = FakeOxylabs(outcome)
+    payloads = [stored_universal(str(page)) for page in range(3)]
+    async with open_async_session(transport=fake, pending_limit=20) as session:
+        error = await incomplete(await session.stream(payloads))
+    assert error.unsubmitted == payloads[1:]
+    assert len(fake.jobs) == 1
+    assert f"Held back 2 payloads for gs://bucket/path, because {reason}" in warnings(
+        caplog
+    )
+
+
+@on_mock_clock
+async def test_check_storage_after_a_rejection(fake: FakeOxylabs) -> None:
+    """A rejected first payload passes the check to the next payload of its `storage_url`."""
+    rejected = oxy.Payload(
+        source="universal",
+        url="https://10.0.0.1/",
+        storage_type="gcs",
+        storage_url="gs://bucket/path",
+    )
+    payloads = [rejected, stored_universal("1"), stored_universal("2")]
+    async with open_async_session() as session:
+        error = await incomplete(await session.stream(payloads))
+    assert [rejection.payload for rejection in error.rejections] == [rejected]
+    assert [job.input for job in error.jobs] == [f"{SANDBOX}/1", f"{SANDBOX}/2"]
+    assert submissions(fake) == 3
 
 
 def unlinked(job: oxy.Job) -> oxy.Job:
@@ -772,13 +943,14 @@ def record(
     payload: dict[str, Any],
     job_id: str | None = None,
     error: dict[str, Any] | None = None,
+    upload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "state": state,
         "id": job_id,
         "payload": payload,
         "error": error,
-        "upload": None,
+        "upload": upload,
     }
 
 
@@ -827,6 +999,25 @@ async def test_run_log() -> None:
             "unfetched", {"source": "universal", "url": f"{SANDBOX}/STUCK"}, stuck.id
         ),
     ]
+
+
+@on_mock_clock
+async def test_run_log_upload() -> None:
+    """A line's `upload` holds the code and message of its job's `statuses` entry."""
+    fake = FakeOxylabs(
+        lambda payload: Outcome(upload=None if "NONE" in payload["url"] else 13102)
+    )
+    store = MemoryStore()
+    payloads = [stored_universal("1"), stored_universal("NONE")]
+    async with open_async_session(transport=fake, pending_limit=20) as session:
+        run = await session.stream(payloads, run_log=store, check_storage=False)
+        error = await incomplete(run)
+    failed, missing = error.unuploaded
+    assert [line["upload"] for line in logged(store)] == [
+        {"code": 13102, "message": "No such path"},
+        {"code": None, "message": None},
+    ]
+    assert [line["id"] for line in logged(store)] == [failed.id, missing.id]
 
 
 def test_empty_run_log() -> None:
@@ -1668,7 +1859,7 @@ async def test_debug_lines(
 
     monkeypatch.setattr(random, "uniform", uniform)
     caplog.set_level(logging.DEBUG, "oxyscraper")
-    fake.fail(503, on="results", times=2)
+    fake.fail(503, on="status", times=2)
     payload = universal(
         storage_type="s3_compatible",
         storage_url="https://key-id:s3cr3t@storage.example.com/bucket/folder",
@@ -1676,11 +1867,11 @@ async def test_debug_lines(
     async with open_async_session() as session:
         run = await session.stream(payload)
         [job] = await run.all()
-    results = f"https://data.oxylabs.io/v1/queries/{job.id}/results"
+    status = f"https://data.oxylabs.io/v1/queries/{job.id}"
     assert lines(caplog, logging.DEBUG) == [
         f"Job {job.id} is pending: {payload!r}",
-        f"Retrying GET {results} in 500ms after 503 Service Unavailable",
-        f"Retrying GET {results} in 1.00s after 503 Service Unavailable",
+        f"Retrying GET {status} in 500ms after 503 Service Unavailable",
+        f"Retrying GET {status} in 1.00s after 503 Service Unavailable",
         f"Job {job.id} is done: {payload!r}",
     ]
     assert "redacted:redacted" in repr(payload)

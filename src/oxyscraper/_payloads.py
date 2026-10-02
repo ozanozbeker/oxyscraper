@@ -55,6 +55,8 @@ _INPUT_KEYS = (
 )
 # The API reads the userinfo up to the last `@`, and the first branch also covers a raw `/`, `?` or `#` in a secret, which the API rejects.
 _CREDENTIALS = re.compile(r"(?<=://)(?:[^/?#:\s\"']*:[^\s\"']*|[^/?#\s\"']+)(?=@)")
+# The API reads a `pages` or `start_page` string as an integer in this form alone (docs/research/live-parameters.md#pages).
+_INTEGER = re.compile(r"[+-]?[0-9]+")
 
 _Device = Literal[
     "desktop",
@@ -292,6 +294,7 @@ def _checked(adapter: TypeAdapter[_T], value: object, path: tuple[str, ...]) -> 
         raise _scrubbed(error, "python", path) from None
 
 
+@_closed
 class _ContextItem(TypedDict):
     key: str
     value: Any
@@ -990,6 +993,14 @@ def _redacted(body: dict[str, Any]) -> dict[str, Any]:
     if "storage_url" in body:
         return body | {"storage_url": _scrub(body["storage_url"])}
     return body
+
+
+def _integer(value: object) -> int | None:
+    """Return the integer the API reads from a `pages` or `start_page` value, or `None` for a type it rejects."""
+    if isinstance(value, str) and _INTEGER.fullmatch(value):
+        return int(value)
+    # `bool` subclasses `int`, but the API rejects `true`.
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _scrub(value: object) -> object:

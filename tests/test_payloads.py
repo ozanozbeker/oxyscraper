@@ -129,7 +129,15 @@ def test_extra_skips_literals(build: Build) -> None:
     assert payload.model_dump()["render"] == "pdf"
 
 
-@pytest.mark.parametrize("context", [{"key": "a", "value": 1}, [{"value": 1}], ["a"]])
+@pytest.mark.parametrize(
+    "context",
+    [
+        {"key": "a", "value": 1},
+        [{"value": 1}],
+        ["a"],
+        [{"key": "a", "value": 1, "typo": 2}],
+    ],
+)
 def test_extra_context_shape(build: Build, context: object) -> None:
     """The `context` in `extra` is a list of items with a `key` and a `value`."""
     with pytest.raises(ValidationError, match=r"extra\.context"):
@@ -350,6 +358,7 @@ def test_typed_values(build: Build, field: str, value: object) -> None:
         ("pages", 0),
         ("start_page", -1),
         ("context", [{"key": "a"}]),
+        ("context", [{"key": "a", "value": 1, "typo": 2}]),
     ],
 )
 def test_typed_values_raise(build: Build, field: str, value: object) -> None:
@@ -394,6 +403,42 @@ def test_dry_run_one_payload() -> None:
     assert report.jobs == [{"source": "universal", "url": "https://example.com"}]
     assert report.job_count == 1
     assert report.max_results == 1
+
+
+@pytest.mark.parametrize(
+    ("pages", "max_results"),
+    [
+        ("3", 3),
+        ("+3", 3),
+        (None, 1),
+        (0, 1),
+        ("-3", 1),
+        ("two", 1),
+        (" 3", 1),
+        (2.5, 1),
+        ([3], 1),
+        (True, 1),
+    ],
+)
+def test_dry_run_pages(pages: object, max_results: int) -> None:
+    """A dry run reads `pages` from `extra` as the API does, and counts 1 for a value the API rejects."""
+    payload = oxy.Payload(
+        source="universal", url="https://example.com", extra={"pages": pages}
+    )
+    assert oxy.dry_run(payload).max_results == max_results
+
+
+def test_sources() -> None:
+    """`SOURCES` lists the seven models that a billed run has checked."""
+    assert (
+        oxy.Amazon,
+        oxy.AmazonBestsellers,
+        oxy.AmazonPricing,
+        oxy.AmazonProduct,
+        oxy.AmazonSearch,
+        oxy.AmazonSellers,
+        oxy.Universal,
+    ) == oxy.SOURCES
 
 
 BROWSER_INSTRUCTIONS = [

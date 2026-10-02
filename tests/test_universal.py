@@ -11,7 +11,6 @@ URL = "https://example.com"
 def test_source() -> None:
     """`Universal` fixes `source`, and its body holds the URL alone by default."""
     assert oxy.Universal(url=URL).model_dump() == {"source": "universal", "url": URL}
-    assert oxy.Universal in oxy.SOURCES
     with pytest.raises(ValidationError, match="source"):
         oxy.Universal.model_validate({"url": URL, "source": "amazon"})
 

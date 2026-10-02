@@ -82,11 +82,6 @@ def test_left_out(model: Model, key: str, value: object) -> None:
         model(**INPUTS[model], **{key: value})
 
 
-def test_sources() -> None:
-    """`SOURCES` lists the six Amazon models."""
-    assert set(oxy.SOURCES) >= set(INPUTS)
-
-
 @pytest.mark.parametrize(
     ("model", "source"),
     [

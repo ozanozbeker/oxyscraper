@@ -4,17 +4,21 @@ import json
 import logging
 import math
 import re
+import signal
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 import anyio
 import httpx2
 import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 from typing_extensions import override
 
 import oxyscraper as oxy
+from oxyscraper import _cli
 from oxyscraper._cli import app, run
 from oxyscraper._main import main
 from oxyscraper._payloads import _INPUT_KEYS
@@ -416,15 +420,19 @@ def test_get_warns_for_each_job_without_results(
         result = runner.invoke(app, ["get", *ids[:3], "404", ids[3]])
     assert result.exit_code == 1
     assert [line["job"]["id"] for line in lines(result.stdout)] == [ids[3]]
-    assert [
-        record.getMessage()
-        for record in caplog.records
-        if record.name == "oxyscraper" and record.levelno == logging.WARNING
-    ] == [
+    warnings = [
         f"Job {ids[0]} is still pending: universal {SANDBOX}/pending",
         f"Job {ids[1]} faulted: universal {SANDBOX}/faulted",
         f"Job {ids[2]}'s results expired: universal {SANDBOX}/expired",
         "Fetching job 404 failed: 404 Query not found.",
+    ]
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "oxyscraper" and record.levelno == logging.WARNING
+    ] == warnings
+    assert plain(result.stderr).splitlines() == [
+        f"warning: {warning}" for warning in warnings
     ]
 
 
@@ -463,3 +471,105 @@ def test_main_without_the_cli_extra(monkeypatch: pytest.MonkeyPatch) -> None:
         SystemExit, match=re.escape("uv tool install 'oxyscraper[cli]'")
     ):
         main()
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_run_prints_plain_lines_off_a_terminal(verbose: bool) -> None:
+    """Off a terminal, `run` prints oxy's lines as uv does, with a `debug:` line for each change of state under `-v`."""
+    with FakeOxylabs(
+        lambda payload: Outcome(
+            status="faulted" if "FAULT" in payload["url"] else "done"
+        )
+    ) as fake:
+        result = runner.invoke(
+            app,
+            ["run", "universal", f"{SANDBOX}/1", f"{SANDBOX}/FAULT", "--realtime"]
+            + ["-v"] * verbose,
+        )
+    assert result.exit_code == 1
+    faulted = next(job["id"] for job in fake.jobs if "FAULT" in job["url"])
+    printed = plain(result.stderr).splitlines()
+    shown = [line for line in printed if not line.startswith("debug: ")]
+    assert shown[:2] == [
+        "Running 2 payloads with Realtime",
+        f"warning: Job {faulted} faulted: universal {SANDBOX}/FAULT",
+    ]
+    assert re.fullmatch(r"Finished 2 payloads in \S+: 1 done, 1 faulted", shown[2])
+    assert len(shown) == 3
+    assert (len(printed) > len(shown)) is verbose
+
+
+def test_run_draws_a_live_line_on_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """On a terminal, `run` redraws a spinner, a bar of 30 dashes and the counts, and prints each log line above it, with each path in cyan."""
+    terminal = io.StringIO()
+    console = Console(
+        file=terminal, force_terminal=True, legacy_windows=False, width=200
+    )
+    monkeypatch.setattr(_cli, "_console", console)
+    result = runner.invoke(
+        app, ["run", "universal", f"{SANDBOX}/1", "--run-log", str(tmp_path)]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(lines(result.stdout)) == 1
+    drawn = terminal.getvalue()
+    assert re.search(r"Running jobs -{30} 0/1 done, 1 pending, ", plain(drawn))
+    assert "Running 1 payload with Push-Pull" in plain(drawn)
+    [log] = tmp_path.iterdir()
+    assert re.search(r"\x1b\[[\d;]*36m" + re.escape(str(log)), drawn)
+
+
+def test_help_without_arguments() -> None:
+    """`oxy` without arguments prints the help and no error, and exits with code 2."""
+    result = runner.invoke(app, [])
+    assert result.exit_code == 2
+    assert "Run Oxylabs Web Scraper API jobs" in result.stdout
+    assert "error" not in result.stderr
+
+
+def test_usage_errors(fake: FakeOxylabs) -> None:
+    """A usage error prints `error:` without a closing period, then the usage line, and exits with code 2."""
+    result = runner.invoke(app, ["run", "universal", f"{SANDBOX}/1", "--pages", "0"])
+    assert result.exit_code == 2
+    printed = plain(result.stderr).splitlines()
+    assert printed[:2] == [
+        "error: Invalid value for '--pages': 0 is not in the range x>=1",
+        "",
+    ]
+    assert printed[2].startswith("Usage: ")
+    assert len(printed) == 3
+
+
+@pytest.mark.parametrize(
+    "command", [["run", "universal", f"{SANDBOX}/1", "--realtime"], ["get", "1"]]
+)
+def test_hint_after_401(fake: FakeOxylabs, command: list[str]) -> None:
+    """After a 401, the CLI prints a hint to check the credentials, and exits with code 1."""
+    fake.fail(401, times=None)
+    result = runner.invoke(app, command)
+    assert result.exit_code == 1
+    assert plain(result.stderr).splitlines()[-1] == (
+        "hint: Check OXY_WSA_USERNAME and OXY_WSA_PASSWORD, because the API returned 401"
+    )
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_kill"), reason="Windows has no pthread_kill"
+)
+@pytest.mark.parametrize(
+    ("signum", "code"), [(signal.SIGINT, 130), (signal.SIGTERM, 143)]
+)
+def test_run_stops_on_a_signal(signum: int, code: int) -> None:
+    """Ctrl+C or SIGTERM while a job is pending stops the run, and exits with code 130 or 143."""
+    main_thread = threading.main_thread().ident
+    assert main_thread is not None
+
+    def interrupt(payload: dict[str, Any]) -> Outcome:
+        signal.pthread_kill(main_thread, signum)
+        return Outcome(after=math.inf)
+
+    with FakeOxylabs(interrupt):
+        result = runner.invoke(app, ["run", "universal", f"{SANDBOX}/1"])
+    assert result.exit_code == code
+    assert "Stopped 1 payload after" in plain(result.stderr)

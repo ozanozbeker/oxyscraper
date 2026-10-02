@@ -379,6 +379,12 @@ class _Line:
         self.body = self.payload.model_dump()
 
 
+class _ShownPath(str):
+    """A path or URL as a log line shows it, so the CLI's handler can print it in cyan."""
+
+    __slots__ = ()
+
+
 @dataclass(frozen=True)
 class _RunLog:
     """Where a run writes its run log."""
@@ -386,7 +392,7 @@ class _RunLog:
     store: ObjectStore
     path: str
     # The path as the caller named it, for the log lines.
-    shown: str
+    shown: _ShownPath
 
 
 @dataclass(eq=False)
@@ -1063,7 +1069,7 @@ class AsyncSession:
 
         A rejected payload has no upload, so the next payload takes its place.
         """
-        shown = _redacted(lines[0].body)["storage_url"]
+        shown = _ShownPath(_redacted(lines[0].body)["storage_url"])
         _logger.info(
             "Checking the upload to %s with one job before submitting %s",
             shown,
@@ -1675,13 +1681,13 @@ def _store(destination: str | os.PathLike[str] | ObjectStore) -> ObjectStore:
     return store
 
 
-def _shown(folder: str | os.PathLike[str] | ObjectStore, name: str) -> str:
+def _shown(folder: str | os.PathLike[str] | ObjectStore, name: str) -> _ShownPath:
     """Return the path of the file `name` in `folder`, or `name` alone in a store the caller built."""
     if isinstance(folder, str) and "://" in folder:
-        return posixpath.join(folder, name)
+        return _ShownPath(posixpath.join(folder, name))
     if isinstance(folder, str | os.PathLike):  # pyrefly: ignore[implicit-any-type-argument]
-        return str(Path(folder) / name)
-    return name
+        return _ShownPath(Path(folder) / name)
+    return _ShownPath(name)
 
 
 def _listed(payloads: Payload | Iterable[Payload]) -> list[Payload]:

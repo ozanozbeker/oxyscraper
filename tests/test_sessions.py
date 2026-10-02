@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import logging
 import math
 import random
@@ -34,6 +35,11 @@ on_mock_clock = pytest.mark.parametrize("anyio_backend", ["trio"], indirect=True
 
 def universal(path: str = "", **fields: Any) -> oxy.Payload:
     return oxy.Payload(source="universal", url=f"{SANDBOX}/{path}", **fields)
+
+
+def walmart(product_id: str) -> oxy.Payload:
+    """Return a payload that goes out alone, because `product_id` takes no batch."""
+    return oxy.Payload(source="walmart_product", product_id=product_id)
 
 
 def checks(fake: FakeOxylabs) -> int:
@@ -123,16 +129,191 @@ def test_session_iterates_jobs() -> None:
 
 
 async def test_stream_yields_jobs(fake: FakeOxylabs) -> None:
-    """`stream` submits one job per payload and yields each job, with oxy's user agent on every request."""
+    """`stream` yields one job per payload, with oxy's user agent on every request."""
     payloads = [universal(str(page)) for page in range(3)]
     async with open_async_session() as session:
         jobs = [job async for job in await session.stream(payloads)]
-    submissions = [request for request in fake.requests if request.method == "POST"]
     assert sorted(job.input for job in jobs) == [payload.url for payload in payloads]
-    assert len(submissions) == 3
     assert {request.headers["user-agent"] for request in fake.requests} == {
         f"oxyscraper/{version('oxyscraper')}"
     }
+
+
+@on_mock_clock
+async def test_batch(fake: FakeOxylabs) -> None:
+    """Payloads that share every parameter but the input go out as one batch, and each job keeps its own payload."""
+    payloads = [universal(str(page), user_agent_type="mobile") for page in range(3)]
+    async with open_async_session() as session:
+        jobs = (await session.execute(payloads)).all()
+    [submission] = [request for request in fake.requests if request.method == "POST"]
+    assert submission.url.path == "/v1/queries/batch"
+    assert json.loads(submission.content) == {
+        "source": "universal",
+        "url": [payload.url for payload in payloads],
+        "user_agent_type": "mobile",
+    }
+    assert {job.input: job.payload for job in jobs} == {
+        payload.url: payload for payload in payloads
+    }
+
+
+@on_mock_clock
+async def test_batch_errors(caplog: pytest.LogCaptureFixture) -> None:
+    """An entry in a batch's `errors` rejects the payload whose value has no job, with the batch's 202, and the rest run."""
+    fake = FakeOxylabs(
+        lambda payload: (
+            Rejected("No.") if payload["query"] == "B0BAD00000" else Outcome()
+        )
+    )
+    asins = ["B000000001", "B0BAD00000", "B000000002"]
+    payloads = [oxy.AmazonProduct(query=asin) for asin in asins]
+    async with open_async_session(transport=fake) as session:
+        error = await incomplete(await session.stream(payloads))
+    assert sorted((job.input, job.payload) for job in error.jobs) == [
+        (payload.query, payload) for payload in (payloads[0], payloads[2])
+    ]
+    assert error.rejections == [
+        oxy.Rejection(
+            payload=payloads[1], status_code=202, message="No.", trace_id=None
+        )
+    ]
+    assert warnings(caplog) == ["Rejected amazon_product B0BAD00000: 202 No."]
+
+
+class Normalized(FakeOxylabs):
+    """Return each batch's jobs with a slash after each URL."""
+
+    @override
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        response = await super().handle_async_request(request)
+        if not request.url.path.endswith("/batch"):
+            return response
+        answer = json.loads(response.content)
+        for job in answer["queries"]:
+            job["url"] += "/"
+        return httpx2.Response(response.status_code, json=answer)
+
+
+@on_mock_clock
+async def test_batch_job_with_a_changed_input() -> None:
+    """A batch job whose input differs from every value pairs with the payload in its place."""
+    fake = Normalized()
+    payloads = [universal("1"), universal("2")]
+    async with open_async_session(transport=fake) as session:
+        jobs = (await session.execute(payloads)).all()
+    assert sorted((job.input, job.payload) for job in jobs) == [
+        (payload.url, payload) for payload in payloads
+    ]
+
+
+@on_mock_clock
+async def test_batch_rejected_whole(fake: FakeOxylabs) -> None:
+    """A 400 on a whole batch rejects every payload in it."""
+    message = "Batch request must contain one array of `query` or `url`."
+    fake.fail(400, on="submit", message=message)
+    payloads = [universal("1"), universal("2")]
+    async with open_async_session() as session:
+        error = await incomplete(await session.stream(payloads))
+    assert [
+        (rejection.payload, rejection.status_code, rejection.message)
+        for rejection in error.rejections
+    ] == [(payload, 400, message) for payload in payloads]
+
+
+def posts(fake: FakeOxylabs) -> list[str]:
+    return [request.url.path for request in fake.requests if request.method == "POST"]
+
+
+@on_mock_clock
+async def test_source_without_batches(fake: FakeOxylabs) -> None:
+    """A source that takes no batch gets its payloads one per request, for the rest of the session."""
+    payloads = [oxy.Payload(source="walmart_search", query=query) for query in "ab"]
+    async with open_async_session() as session:
+        first = await session.execute(payloads)
+        second = await session.execute(payloads)
+    assert posts(fake) == ["/v1/queries/batch", *["/v1/queries"] * 4]
+    assert [len(first.all()), len(second.all())] == [2, 2]
+
+
+@on_mock_clock
+async def test_input_key_without_batches(fake: FakeOxylabs) -> None:
+    """Three `walmart_product` payloads go out one per request, because a batch takes only `query`, `url` or `prompt`."""
+    async with open_async_session() as session:
+        run = await session.execute([walmart(str(product)) for product in range(3)])
+    assert posts(fake) == ["/v1/queries"] * 3
+    assert len(run.all()) == 3
+
+
+@on_mock_clock
+@pytest.mark.parametrize(("limit", "render_limit"), [(50, 13), (100, 25)])
+async def test_pacing(limit: int, render_limit: int) -> None:
+    """A run of batches, single payloads, rendered payloads and pages gets no 429, on Starter's limits and on Business's."""
+    fake = FakeOxylabs(limit=limit, render_limit=render_limit)
+    payloads = [
+        *(universal(str(page)) for page in range(300)),
+        *(walmart(str(product)) for product in range(120)),
+        *(universal(str(page), render="html") for page in range(40)),
+        *(universal(str(page), pages=3) for page in range(30)),
+    ]
+    async with open_async_session(transport=fake) as session:
+        run = await session.execute(payloads)
+    assert (len(run.all()), run.progress.retries) == (len(payloads), 0)
+
+
+@on_mock_clock
+async def test_payload_above_a_limit(fake: FakeOxylabs) -> None:
+    """A rendered payload with `pages: 14` ends as a Rejection without a retry, and the payloads beside it run."""
+    large = universal("large", render="html", pages=14)
+    async with open_async_session() as session:
+        error = await incomplete(await session.stream([large, universal()]))
+    [rejection] = error.rejections
+    assert (rejection.payload, rejection.status_code) == (large, 429)
+    assert rejection.message == (
+        "The payload's 14 pages exceed the total-render-requests limit of 13, so the API returns 429 for it in every window"
+    )
+    assert rejection.trace_id
+    assert (submissions(fake), len(error.jobs), error.__cause__) == (2, 1, None)
+
+
+@on_mock_clock
+async def test_smaller_plan() -> None:
+    """A batch sized for Starter's limits goes out again in batches that fit the limits its 429 names."""
+    fake = FakeOxylabs(limit=10, render_limit=3)
+    payloads = [universal(str(page)) for page in range(30)]
+    async with open_async_session(transport=fake) as session:
+        run = await session.execute(payloads)
+    assert (len(run.all()), run.progress.retries) == (30, 1)
+    assert [
+        len(json.loads(request.content)["url"])
+        for request in fake.requests
+        if request.method == "POST"
+    ] == [30, 10, 10, 10]
+
+
+@on_mock_clock
+async def test_runs_share_budgets(fake: FakeOxylabs) -> None:
+    """Two runs on one session share its budgets, so together they get no 429."""
+    async with open_async_session() as session:
+        first = await session.stream([walmart(str(product)) for product in range(60)])
+        second = await session.stream(
+            [walmart(str(product)) for product in range(60, 120)]
+        )
+        jobs = [*await first.all(), *await second.all()]
+    assert len(jobs) == 120
+    assert first.progress.retries + second.progress.retries == 0
+
+
+@on_mock_clock
+async def test_slow_loop_pauses_submissions(fake: FakeOxylabs) -> None:
+    """While 100 finished jobs wait for the caller's loop, oxy sends at most the submissions it already paced."""
+    payloads = [universal(str(page)) for page in range(500)]
+    async with open_async_session() as session:
+        run = await session.stream(payloads)
+        await anyio.sleep(30)
+        submitted = len(fake.jobs)
+        jobs = await run.all()
+    assert submitted <= 200
+    assert len(jobs) == 500
 
 
 @on_mock_clock
@@ -369,6 +550,19 @@ async def test_unknown_outcome(
 
 
 @on_mock_clock
+async def test_unknown_outcome_of_a_batch(
+    fake: FakeOxylabs, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A batch retried after a 5xx writes one WARNING line that names its size."""
+    fake.fail(503, on="submit")
+    async with open_async_session() as session:
+        await session.execute([universal("1"), universal("2")])
+    assert warnings(caplog) == [
+        "Retrying a batch of 2 universal payloads after 503 Service Unavailable; the API may have created their jobs, and each duplicate bills"
+    ]
+
+
+@on_mock_clock
 async def test_retry_limit(fake: FakeOxylabs) -> None:
     """A submission stops retrying `retry_limit` seconds after its first failure, and stops the run."""
     fake.fail(503, on="submit", times=None)
@@ -454,8 +648,11 @@ async def test_rejections(caplog: pytest.LogCaptureFixture) -> None:
             else Outcome()
         )
     )
-    ip = oxy.Payload(source="universal", url="https://10.0.0.1/")
-    llm = universal("422")
+    # Each payload differs from the others in a parameter, so each goes out alone.
+    ip = oxy.Payload(
+        source="universal", url="https://10.0.0.1/", user_agent_type="mobile"
+    )
+    llm = universal("422", user_agent_type="tablet")
     async with open_async_session(transport=fake) as session:
         error = await incomplete(await session.stream([ip, llm, universal()]))
     [job] = error.jobs
@@ -493,14 +690,14 @@ async def test_stop_yields_accepted_jobs(caplog: pytest.LogCaptureFixture) -> No
         return Outcome(after=5)
 
     fake = FakeOxylabs(outcome)
-    payloads = [universal(str(page)) for page in range(3)]
+    payloads = [walmart(str(product)) for product in range(3)]
     async with open_async_session(transport=fake) as session:
         error = await incomplete(await session.stream(payloads))
     [job] = error.jobs
     assert (job.status, job.id) == ("done", fake.jobs[0]["id"])
-    assert sorted(
-        [job.input, *(str(payload.url) for payload in error.unsubmitted)]
-    ) == [str(payload.url) for payload in payloads]
+    assert sorted([job.payload, *error.unsubmitted], key=repr) == sorted(
+        payloads, key=repr
+    )
     assert cause(error).status_code == 403
     assert warnings(caplog) == [
         "Stopped submitting, because the API returned 403 Forbidden; 2 payloads stay unsubmitted"
@@ -846,7 +1043,7 @@ async def test_stopped_line(caplog: pytest.LogCaptureFixture) -> None:
     fake = FakeOxylabs(outcome)
     fake.fail(503, on="submit")
     async with open_async_session(transport=fake, pending_limit=None) as session:
-        run = await session.stream([universal("1"), universal("2"), universal("3")])
+        run = await session.stream([walmart("1"), walmart("2"), walmart("3")])
         await anyio.sleep(2.5)
         fake.fail(401, on="results", times=None)
         await incomplete(run)

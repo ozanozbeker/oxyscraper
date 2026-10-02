@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import collections
 import itertools
+import json
 import logging
 import math
 import random
@@ -30,15 +31,19 @@ from oxyscraper.testing import _switched_on
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
-    from anyio.abc import TaskGroup
+    from anyio.abc import TaskGroup, TaskStatus
     from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
 _OutputType = Literal["raw", "parsed", "png", "markdown", "xhr"]
 _Status = Literal["pending", "done", "faulted"]
 _Content = str | bytes | dict[str, Any] | list[Any]
 _T = TypeVar("_T")
+_Limit = Literal["total-requests", "total-render-requests"]
 
 _DATA = "https://data.oxylabs.io/v1/queries"
+_BATCH = f"{_DATA}/batch"
+_BATCH_KEYS = ("query", "url", "prompt")
+_MAX_BATCH = 5000
 _USER_AGENT = f"oxyscraper/{version('oxyscraper')}"
 # httpx2 makes a request past a connection's 100 HTTP/2 streams wait with no timeout.
 _MAX_REQUESTS = 100
@@ -57,6 +62,12 @@ _UNAUTHORIZED = frozenset({httpx2.codes.UNAUTHORIZED, httpx2.codes.FORBIDDEN})
 _THROTTLE = re.compile(r"Access to \S+ has been limited to 1 req/s")
 # The API's 500 page names its trace ID only in its text.
 _TRACE_ID = re.compile(r"trace_id: ([\w-]+)")
+# Each name carries a UUID, which stays the same for an account.
+_RATE_LIMIT = re.compile(
+    r"x-ratelimit-(?P<name>total-requests|total-render-requests)-[\w-]+-(?P<kind>limit|remaining)"
+)
+# Starter's limits, which oxy assumes until a response carries the account's own.
+_STARTER: dict[_Limit, int] = {"total-requests": 50, "total-render-requests": 13}
 
 _logger = logging.getLogger("oxyscraper")
 
@@ -324,6 +335,9 @@ class _Line:
     job: Job | None = None
     rejection: Rejection | None = None
 
+    def __post_init__(self) -> None:
+        self.body = self.payload.model_dump()
+
 
 @dataclass(eq=False)
 class _RunState:
@@ -427,6 +441,62 @@ class _RunState:
             unfetched=unfetched,
             unuploaded=[],
         )
+
+
+class _Budgets:
+    """The rate limits of one session, and what is left of each in the current window.
+
+    Oxylabs opens a window at the first submission it receives after the last window closed, and no response carries a reset time.
+    So oxy ends a window 1 second after its first response, by when the API's window has closed.
+    """
+
+    def __init__(self) -> None:
+        self.limits = dict(_STARTER)
+        self._left = dict(_STARTER)
+        self._opened: float | None = None
+        self._lock = anyio.Lock()
+        self._settled = anyio.Event()
+
+    def fits(self, cost: Mapping[_Limit, int]) -> bool:
+        return all(count <= self.limits[name] for name, count in cost.items())
+
+    async def take(self, cost: Mapping[_Limit, int]) -> None:
+        """Wait until `cost` fits every budget, and take it from each.
+
+        A cost above a limit counts as the whole limit, so it goes out alone once that budget is full.
+        """
+        async with self._lock:
+            while True:
+                capped = {
+                    name: min(count, self.limits[name]) for name, count in cost.items()
+                }
+                if all(self._left[name] >= count for name, count in capped.items()):
+                    for name, count in capped.items():
+                        self._left[name] -= count
+                    return
+                if self._opened is None:
+                    await self._settled.wait()
+                else:
+                    await anyio.sleep_until(self._opened + 1)
+                    self._left = dict(self.limits)
+                    self._opened = None
+
+    def settle(self, headers: httpx2.Headers) -> None:
+        """Open the window if this submission ended first in it, and read the limits from its response's headers.
+
+        A submission that ended without a response opens the window too, so no `take` waits for a response that never comes.
+        """
+        if self._opened is None:
+            self._opened = anyio.current_time()
+        for header, value in headers.items():
+            if (match := _RATE_LIMIT.fullmatch(header)) and value.isdigit():
+                name = cast("_Limit", match["name"])
+                if match["kind"] == "limit":
+                    self.limits[name] = int(value)
+                else:
+                    self._left[name] = min(self._left[name], int(value))
+        self._settled.set()
+        self._settled = anyio.Event()
 
 
 class Run:
@@ -596,11 +666,14 @@ class AsyncSession:
         self._hosts: collections.defaultdict[str, anyio.Semaphore] = (
             collections.defaultdict(lambda: anyio.Semaphore(_MAX_REQUESTS))
         )
+        # The sources whose batch returned `not available with a batch request`, so their payloads go out one per request.
+        self._unbatched: set[str] = set()
         self._stack = AsyncExitStack()
 
     async def __aenter__(self) -> Self:
         """Open the client and the task group that runs the runs."""
         await self._stack.enter_async_context(self._http)
+        self._budgets = _Budgets()
         # The streams close after the task group exits, so no task sends into a closed stream.
         self._streams = self._stack.enter_context(ExitStack())
         self._tasks = await self._stack.enter_async_context(anyio.create_task_group())
@@ -686,9 +759,9 @@ class AsyncSession:
                     async with anyio.create_task_group() as checks:
                         with state.submitting:
                             async with anyio.create_task_group() as submissions:
-                                for line in state.lines:
-                                    submissions.start_soon(
-                                        self._push, state, line, checks
+                                for lines in _groups(state.lines):
+                                    await self._dispatch(
+                                        state, lines, checks, submissions
                                     )
                 reports.cancel_scope.cancel()
                 state.end()
@@ -702,30 +775,147 @@ class AsyncSession:
             await anyio.sleep(interval)
             _logger.info("%s", state.progress())
 
-    async def _push(self, state: _RunState, line: _Line, checks: TaskGroup) -> None:
-        """Submit one payload, and start the checks of its job."""
-        body = line.payload.model_dump()
+    async def _dispatch(
+        self,
+        state: _RunState,
+        lines: Sequence[_Line],
+        checks: TaskGroup,
+        submissions: TaskGroup,
+    ) -> None:
+        """Submit lines that share every parameter but the input, in batches as large as the limits allow."""
+        start = 0
+        while start < len(lines):
+            # Submissions pause while 100 finished jobs wait for the caller's loop.
+            await state.waiting.acquire()
+            state.waiting.release()
+            size = self._size(lines[start].body)
+            await submissions.start(
+                self._push, state, lines[start : start + size], checks, submissions
+            )
+            start += size
+
+    def _size(self, body: dict[str, Any]) -> int:
+        """Return the most payloads like `body` that one submission holds."""
+        if _input_key(body) not in _BATCH_KEYS or body["source"] in self._unbatched:
+            return 1
+        limits = self._budgets.limits
+        size = min(limits[name] // pages for name, pages in _cost(body).items())
+        return max(1, min(size, _MAX_BATCH))
+
+    async def _push(
+        self,
+        state: _RunState,
+        lines: Sequence[_Line],
+        checks: TaskGroup,
+        submissions: TaskGroup,
+        *,
+        task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED,
+    ) -> None:
+        """Submit one payload or a batch, and start the checks of each job."""
+        cost = _cost(lines[0].body, len(lines))
+        await self._budgets.take(cost)
+        task_status.started()
+        key = _input_key(lines[0].body)
+        single = len(lines) == 1
+
+        def read(response: httpx2.Response) -> tuple[list[Job], list[str]]:
+            answer = response.json()
+            if single:
+                return [_job(answer, [])], []
+            errors = [str(entry["message"]) for entry in answer.get("errors", [])]
+            return [_job(data, []) for data in answer["queries"]], errors
+
+        values = [line.body[key] for line in lines]
         try:
-            line.job = await self._request(
+            jobs, errors = await self._request(
                 "POST",
-                _DATA,
-                lambda response: _job(response.json(), [], payload=line.payload),
-                json=body,
+                _DATA if single else _BATCH,
+                read,
+                json=lines[0].body if single else lines[0].body | {key: values},
                 state=state,
+                cost=cost,
             )
         except OxylabsError as error:
+            if _too_many(error) and not self._budgets.fits(cost):
+                await self._resize(state, lines, error, checks, submissions)
+                return
             if error.status_code not in _REJECTED:
                 state.stop(error, state.submitting)
                 return
-            line.rejection = Rejection(
-                payload=line.payload,
-                status_code=error.status_code,
-                message=error.message,
-                trace_id=error.trace_id,
-            )
-            state.move(line, "rejected")
-            _logger.warning("Rejected %s %s: %s", *_named(body), error)
+            for line in lines:
+                _reject(state, line, error.status_code, error.message, error.trace_id)
             return
+        source = lines[0].body["source"]
+        if f"Source `{source}` is not available with a batch request." in errors:
+            self._unbatched.add(source)
+            await self._dispatch(state, lines, checks, submissions)
+            return
+        self._match(state, lines, jobs, errors, checks)
+
+    def _match(
+        self,
+        state: _RunState,
+        lines: Sequence[_Line],
+        jobs: list[Job],
+        errors: list[str],
+        checks: TaskGroup,
+    ) -> None:
+        """Pair each job with the payload of its input value, and reject each payload without a job."""
+        key = _input_key(lines[0].body)
+        pools: collections.defaultdict[str, collections.deque[_Line]] = (
+            collections.defaultdict(collections.deque)
+        )
+        for line in lines:
+            pools[line.body[key]].append(line)
+        unmatched: list[Job] = []
+        for job in jobs:
+            if pool := pools.get(job.input):
+                self._accept(state, pool.popleft(), job, checks)
+            else:
+                unmatched.append(job)
+        # The API returns jobs in the order of the values, so a job whose input the API changed pairs with the next payload without a job.
+        rest = [line for line in lines if line.job is None]
+        for line, job in zip(rest, unmatched, strict=False):
+            self._accept(state, line, job, checks)
+        # An entry in `errors` holds no `query`, so entries pair with payloads by order.
+        messages = iter(errors)
+        for line in rest[len(unmatched) :]:
+            message = next(messages, "The batch returned neither a job nor an error")
+            _reject(state, line, httpx2.codes.ACCEPTED, message, None)
+
+    async def _resize(
+        self,
+        state: _RunState,
+        lines: Sequence[_Line],
+        error: OxylabsError,
+        checks: TaskGroup,
+        submissions: TaskGroup,
+    ) -> None:
+        """Reject payloads whose pages exceed a limit, or submit them again in batches that fit the limits."""
+        limits = self._budgets.limits
+        if over := [
+            (name, pages)
+            for name, pages in _cost(lines[0].body).items()
+            if pages > limits[name]
+        ]:
+            name, pages = over[0]
+            message = f"The payload's {pages} pages exceed the {name} limit of {limits[name]}, so the API returns 429 for it in every window"
+            for line in lines:
+                _reject(
+                    state,
+                    line,
+                    httpx2.codes.TOO_MANY_REQUESTS,
+                    message,
+                    error.trace_id,
+                )
+            return
+        state.retries += 1
+        await self._dispatch(state, lines, checks, submissions)
+
+    def _accept(
+        self, state: _RunState, line: _Line, job: Job, checks: TaskGroup
+    ) -> None:
+        line.job = replace(job, payload=line.payload)
         state.move(line, "pending")
         checks.start_soon(self._check, state, line, line.job)
 
@@ -828,10 +1018,13 @@ class AsyncSession:
         json: dict[str, Any] | None = None,
         params: Mapping[str, str] | None = None,
         state: _RunState | None = None,
+        cost: Mapping[_Limit, int] | None = None,
     ) -> _T:
         """Send a request under the retry policy, and return what `read` returns for the response.
 
         Each retry counts toward the retries of `state`, the run that sent the request.
+        A submission passes its `cost`, which paces each retry, while the caller paces the first attempt.
+        A 429 that leaves the cost above a limit raises, so the caller can resize the submission.
 
         Raises
         ------
@@ -842,21 +1035,37 @@ class AsyncSession:
         ceiling = 1.0
         while True:
             try:
-                return await self._attempt(method, url, read, json=json, params=params)
+                return await self._attempt(
+                    method, url, read, json=json, params=params, paced=cost is not None
+                )
             except OxylabsError as error:
                 now = anyio.current_time()
                 deadline = now + self._retry_limit if deadline is None else deadline
-                if not _retried(error) or now >= deadline:
+                resize = (
+                    cost is not None
+                    and _too_many(error)
+                    and not self._budgets.fits(cost)
+                )
+                if not _retried(error) or now >= deadline or resize:
                     raise
                 wait = min(random.uniform(0, ceiling), deadline - now)  # noqa: S311
                 if state:
                     state.retries += 1
                 if json is not None and _unknown(error):
-                    _logger.warning(
-                        "Retrying a submission of %s %s after %s; the API may have created its job, and a duplicate bills",
-                        *_named(json),
-                        error,
-                    )
+                    values = json[_input_key(json)]
+                    if isinstance(values, list):
+                        _logger.warning(
+                            "Retrying a batch of %s %s payloads after %s; the API may have created their jobs, and each duplicate bills",
+                            len(values),
+                            json["source"],
+                            error,
+                        )
+                    else:
+                        _logger.warning(
+                            "Retrying a submission of %s %s after %s; the API may have created its job, and a duplicate bills",
+                            *_named(json),
+                            error,
+                        )
                 else:
                     _logger.debug(
                         "Retrying %s %s in %s after %s",
@@ -867,8 +1076,10 @@ class AsyncSession:
                     )
             await anyio.sleep(wait)
             ceiling = min(ceiling * 2, _MAX_WAIT)
+            if cost is not None:
+                await self._budgets.take(cost)
 
-    async def _attempt(
+    async def _attempt(  # noqa: PLR0913
         self,
         method: str,
         url: str,
@@ -876,14 +1087,22 @@ class AsyncSession:
         *,
         json: dict[str, Any] | None,
         params: Mapping[str, str] | None,
+        paced: bool,
     ) -> _T:
         try:
-            async with self._hosts[httpx2.URL(url).host]:
-                # The API may create a job once a submission is sent, so a stop lets the attempt finish and keeps the job's ID.
-                with anyio.CancelScope(shield=method == "POST"):
-                    response = await self._http.request(
-                        method, url, json=json, params=params
-                    )
+            try:
+                async with self._hosts[httpx2.URL(url).host]:
+                    # The API may create a job once a submission is sent, so a stop lets the attempt finish and keeps the job's ID.
+                    with anyio.CancelScope(shield=method == "POST"):
+                        response = await self._http.request(
+                            method, url, json=json, params=params
+                        )
+            except BaseException:
+                if paced:
+                    self._budgets.settle(httpx2.Headers())
+                raise
+            if paced:
+                self._budgets.settle(response.headers)
             response.raise_for_status()
             try:
                 return read(response)
@@ -1021,12 +1240,55 @@ def dry_run(payloads: Payload | Iterable[Payload]) -> DryRun:
     jobs = [_redacted(payload.model_dump()) for payload in _listed(payloads)]
     return DryRun(
         jobs=jobs,
-        max_results=sum(max(_integer(job.get("pages")) or 1, 1) for job in jobs),
+        max_results=sum(_pages(job) for job in jobs),
     )
 
 
 def _listed(payloads: Payload | Iterable[Payload]) -> list[Payload]:
     return [payloads] if isinstance(payloads, Payload) else list(payloads)
+
+
+def _groups(lines: Iterable[_Line]) -> list[list[_Line]]:
+    """Group the lines whose bodies share every parameter but the input, in the order of their first line."""
+    groups: dict[str, list[_Line]] = {}
+    for line in lines:
+        key = _input_key(line.body)
+        rest = {name: value for name, value in line.body.items() if name != key}
+        groups.setdefault(json.dumps([key, rest], sort_keys=True), []).append(line)
+    return list(groups.values())
+
+
+def _input_key(body: Mapping[str, Any]) -> str:
+    return next(key for key in _INPUT_KEYS if key in body)
+
+
+def _pages(body: Mapping[str, Any]) -> int:
+    """Return the `pages` that the API counts, with 1 for a body without a positive one."""
+    return max(_integer(body.get("pages")) or 1, 1)
+
+
+def _cost(body: Mapping[str, Any], values: int = 1) -> dict[_Limit, int]:
+    """Return what a submission of `values` payloads like `body` takes from each limit it counts against."""
+    rendered = bool(body.get("render")) or body.get("xhr") is True
+    names: list[_Limit] = ["total-requests", "total-render-requests"]
+    return dict.fromkeys(names[: 1 + rendered], values * _pages(body))
+
+
+def _reject(
+    state: _RunState,
+    line: _Line,
+    status_code: int,
+    message: str,
+    trace_id: str | None,
+) -> None:
+    line.rejection = Rejection(
+        payload=line.payload,
+        status_code=status_code,
+        message=message,
+        trace_id=trace_id,
+    )
+    state.move(line, "rejected")
+    _logger.warning("Rejected %s %s: %s %s", *_named(line.body), status_code, message)
 
 
 def _error(response: httpx2.Response) -> OxylabsError:
@@ -1044,6 +1306,10 @@ def _error(response: httpx2.Response) -> OxylabsError:
         message=body.get("message") or joined or response.reason_phrase,
         trace_id=body.get("trace_id") or (page[1] if page else None),
     )
+
+
+def _too_many(error: OxylabsError) -> bool:
+    return error.status_code == httpx2.codes.TOO_MANY_REQUESTS
 
 
 def _retried(error: OxylabsError) -> bool:

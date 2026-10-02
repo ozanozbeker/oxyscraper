@@ -29,6 +29,7 @@ The raw captures stay outside the repo, and the objects stay in the bucket under
   The entry appears after the job turns `done` or `faulted`.
   13 of 25 jobs showed a final status with an empty `statuses` first.
   `updated_at` does not change when the entry appears.
+  A job object of the payload alone has no `statuses`, even after a successful upload ([Probes on 2026-10-02](#probes-on-2026-10-02)).
 - **Failures.**
   A bucket that does not exist gives 13102.
   An object name that already exists gives 10001 about 20 seconds after the job finishes, and the existing object stays unchanged.
@@ -374,6 +375,19 @@ It billed 1 result, for the one `walmart_product` job that the API took.
 Its job object held the resolved and redacted `storage_url`, `https://redacted:redacted@<name>.com/bucket/folder/<job_id>.json`, not the value sent.
 The job ended `done` within 4 seconds, and 7 minutes later its object still had no `statuses` key.
 An endpoint that does not resolve also leaves `statuses` empty on a full job object, so this does not show whether a successful upload adds the key.
+[Probes on 2026-10-02](#probes-on-2026-10-02) shows that a successful upload adds no key either.
+
+## Probes on 2026-10-02
+
+A probe for [Match the fake to the API before 0.1.0](https://github.com/ozanozbeker/oxyscraper/issues/105) sent one `walmart_product` job with `storage_type: gcs` and a folder in the run's bucket.
+It billed 1 result.
+
+The job object held the resolved `storage_url`, with `<job_id>.json` appended.
+The job ended `done` within 4 seconds.
+Oxylabs wrote a 632,294-byte object to the folder, with a `last_modified` 2 seconds after the job's `updated_at`.
+The run polled the status endpoint every 2 seconds for 300 seconds after that.
+Every job object held the same 9 keys: `_links`, `created_at`, `id`, `product_id`, `source`, `status`, `storage_type`, `storage_url` and `updated_at`.
+So a job object of the payload alone has no `statuses`, and it shows no upload's outcome.
 
 ## Open questions
 

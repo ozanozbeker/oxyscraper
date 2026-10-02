@@ -128,15 +128,21 @@ async def test_every_source(fake: FakeOxylabs) -> None:
     sources = dict(rows)
 
     formats = {
+        "amazon_pricing": "1492056359",
+        "amazon_product": "1492056359",
         "target_category": "12345",
         "target_product": "12345678",
         "tiktok_shop_product": "1" * 19,
     }
+    required: dict[str, dict[str, Any]] = {
+        "google_ai_mode": {"render": "html"},
+        "youtube_download": {"storage_type": "gcs", "storage_url": "bucket"},
+        "youtube_metadata": {"parse": True},
+    } | {source: {"domain": "com"} for source in testing._REQUIRED_DOMAIN}
 
-    def payload(source: str, key: str) -> dict[str, str]:
+    def payload(source: str, key: str) -> dict[str, Any]:
         value = f"{SANDBOX}/" if key == "url" else formats.get(source, "x")
-        domain = {"domain": "com"} if source in testing._REQUIRED_DOMAIN else {}
-        return {"source": source, key: value} | domain
+        return {"source": source, key: value} | required.get(source, {})
 
     fake = FakeOxylabs(limit=len(sources))
     async with client(fake) as http:
@@ -299,6 +305,26 @@ async def test_content(fake: FakeOxylabs) -> None:
 
 
 @pytest.mark.parametrize(
+    ("payload", "remaining"),
+    [
+        (universal(pages=3), "47"),
+        ({"source": "amazon_product", "query": "1492056359", "pages": 2}, "48"),
+    ],
+)
+async def test_one_page(
+    fake: FakeOxylabs, payload: dict[str, Any], remaining: str
+) -> None:
+    """A source without pagination fetches one page, and counts every page against the limit."""
+    async with client(fake) as http:
+        response = await http.post(DATA, json=payload)
+        job = response.json()
+        answer = (await http.get(f"{DATA}/{job['id']}/results")).json()
+    assert job["pages"] == answer["job"]["pages"] == 1
+    assert len(answer["results"]) == len(job["_links"][2]["href_list"]) == 1
+    assert response.headers[f"{LIMIT}-remaining"] == remaining
+
+
+@pytest.mark.parametrize(
     ("payload", "carried"),
     [
         ({"source": "walmart_product", "product_id": "1"}, True),
@@ -335,7 +361,7 @@ async def test_default_content(
     fake: FakeOxylabs, parameters: dict[str, Any], kind: str, content: object
 ) -> None:
     """Without content, the fake writes the job's default output type from its input."""
-    payload = {"source": "amazon_product", "query": "B0", **parameters}
+    payload = {"source": "amazon_search", "query": "B0", **parameters}
     async with client(fake) as http:
         job_id = (await http.post(DATA, json=payload)).json()["id"]
         [result] = (await http.get(f"{DATA}/{job_id}/results")).json()["results"]
@@ -412,6 +438,23 @@ async def test_uploads(fake: FakeOxylabs) -> None:
     assert missing == []
 
 
+@on_mock_clock
+async def test_no_upload_entry(fake: FakeOxylabs) -> None:
+    """A job object of the payload alone never gets `statuses`, even after its upload."""
+    payload = {
+        "source": "walmart_product",
+        "product_id": "11601059297",
+        "storage_type": "gcs",
+        "storage_url": "bucket/run",
+    }
+    async with client(fake) as http:
+        job_id = (await http.post(DATA, json=payload)).json()["id"]
+        await anyio.sleep(300)
+        job = (await http.get(f"{DATA}/{job_id}")).json()
+    assert job["status"] == "done"
+    assert "statuses" not in job
+
+
 async def test_outcome_function(fake: FakeOxylabs) -> None:
     """A function receives each batch value's payload, and a `Rejected` rejects it."""
     received: list[dict[str, Any]] = []
@@ -444,7 +487,61 @@ async def test_outcome_function(fake: FakeOxylabs) -> None:
         ({"source": "unknown", "query": "x"}, "Unsupported source."),
         ({"source": "universal"}, "Parameter `url` is empty."),
         ({"source": "amazon_product", "query": ""}, "Query parameter is empty."),
+        (
+            {"source": "amazon_search", "query": ""},
+            "Either `query` or `context:merchant_id` parameters must be set.",
+        ),
+        ({"source": "universal", "query": SANDBOX}, "Parameter `url` is empty."),
+        ({"source": "google_search", "prompt": "x"}, "Query parameter is empty."),
+        (
+            {"source": "google_search", "url": SANDBOX},
+            "Source `google_search` is not available with url parameter.",
+        ),
+        (
+            {"source": "chatgpt", "url": SANDBOX},
+            "Source `chatgpt` is not available with url parameter.",
+        ),
+        (
+            {"source": "google_ai_mode", "query": "x"},
+            "Parameter `render` for this source can only be set to one of: html, png.",
+        ),
+        (
+            {"source": "youtube_download", "query": "x"},
+            "Parameter `storage_url` must be provided for this source.",
+        ),
+        (
+            {"source": "youtube_metadata", "query": "x"},
+            "Parameter `parse` must be enabled for this source.",
+        ),
+        (
+            universal(parse=True),
+            f"Parsing `{SANDBOX}/` url is allowed only with `parser_type` or `parsing_instructions` parameter.",
+        ),
+        (
+            {"source": "amazon_product", "query": "149205635"},
+            "ASIN length is not valid.",
+        ),
+        (
+            {"source": "amazon_pricing", "query": "b0cw1qc1v1"},
+            "ASIN should only contain alphanumeric values.",
+        ),
         (universal(pages=0), "Parameter `pages` should be a positive integer."),
+        (
+            universal(start_page=0),
+            "Parameter `start_page` should be a positive integer.",
+        ),
+        (
+            {"source": "amazon_search", "query": "x", "start_page": "-1"},
+            "Parameter `start_page` should be a positive integer.",
+        ),
+        (
+            {"source": "amazon_search", "query": "x", "start_page": "two"},
+            "Invalid type for parameter `start_page`, supported types: `integer, string`.",
+        ),
+        (
+            {"source": "google_search", "query": "x", "start_page": 2.5},
+            "Invalid type for parameter `start_page`, supported types: `integer, string`.",
+        ),
         (universal(pages=21), "Parameter `pages` should not exceed 20."),
         (
             {"source": "google_search", "query": "x", "pages": 11},
@@ -559,6 +656,10 @@ async def test_free_checks(
             ["[foo_bar]: This field was not expected."],
         ),
         (
+            {"source": "walmart_search", "query": "x", "start_page": "2"},
+            ["[start_page]: This value should be of type int."],
+        ),
+        (
             {"source": "walmart_product", "product_id": "", "pages": 25},
             [
                 "[pages]: This field was not expected.",
@@ -597,6 +698,24 @@ async def test_keys_a_source_takes(fake: FakeOxylabs) -> None:
     assert invalid.json()["message"] == "Parameter `url` is invalid."
 
 
+async def test_start_page(fake: FakeOxylabs) -> None:
+    """A batch source takes `start_page` as digits, and a source without batches takes 0."""
+    payload = {"source": "amazon_search", "query": "x", "start_page": "2"}
+    async with client(fake) as http:
+        job = (await http.post(DATA, json=payload)).json()
+        batch = (
+            await http.post(f"{DATA}/batch", json=payload | {"query": ["x"]})
+        ).json()
+        realtime = (await http.post(REALTIME, json=payload)).json()
+        [result] = (await http.get(f"{DATA}/{job['id']}/results")).json()["results"]
+        walmart = await http.post(
+            DATA, json={"source": "walmart_search", "query": "x", "start_page": 0}
+        )
+    assert job["start_page"] == batch["queries"][0]["start_page"] == 2
+    assert result["page"] == realtime["results"][0]["page"] == 2
+    assert walmart.json()["start_page"] == 0
+
+
 async def test_inputs_the_api_takes(fake: FakeOxylabs) -> None:
     """`walmart_search` takes no `query`, and an LLM source takes `query` but no other key."""
     async with client(fake) as http:
@@ -613,6 +732,30 @@ async def test_inputs_the_api_takes(fake: FakeOxylabs) -> None:
         400,
         "Query parameter is empty.",
     )
+
+
+@pytest.mark.parametrize(
+    ("payload", "query"),
+    [
+        ({"source": "amazon_bestsellers"}, None),
+        ({"source": "amazon_bestsellers", "query": ""}, ""),
+        (
+            {
+                "source": "amazon_search",
+                "context": [{"key": "merchant_id", "value": "A2OL0VKAHK1LYK"}],
+            },
+            None,
+        ),
+    ],
+)
+async def test_amazon_inputs(
+    fake: FakeOxylabs, payload: dict[str, Any], query: str | None
+) -> None:
+    """`amazon_bestsellers` checks no input, and `amazon_search` takes `context:merchant_id` in place of `query`."""
+    async with client(fake) as http:
+        response = await http.post(DATA, json=payload)
+    assert response.status_code == 202
+    assert response.json()["query"] == query
 
 
 async def test_batch_checks(fake: FakeOxylabs) -> None:
@@ -853,6 +996,17 @@ async def test_fail_every_request(fake: FakeOxylabs) -> None:
     assert after.status_code == 200
 
 
+@on_mock_clock
+async def test_clock_starts_at_first_request(fake: FakeOxylabs) -> None:
+    """The fake's time counts from its first request, even one that fails."""
+    fake.fail(503)
+    async with client(fake) as http:
+        await http.post(DATA, json=universal())
+        await anyio.sleep(5)
+        job = (await http.post(DATA, json=universal())).json()
+    assert job["created_at"] == "2026-01-01 00:00:05"
+
+
 def test_fail_times() -> None:
     """`fail()` raises for `times` below 1."""
     with pytest.raises(ValueError, match="times must be at least 1"):
@@ -865,6 +1019,14 @@ async def test_switch(fake: FakeOxylabs) -> None:
     with FakeOxylabs() as inner:
         assert await anyio.to_thread.run_sync(testing._switched_on) is inner
     assert testing._switched_on() is fake
+
+
+def test_switch_back(fake: FakeOxylabs) -> None:
+    """Leaving a block switches on the fake of the block around it, even when the fake repeats."""
+    with FakeOxylabs() as inner:
+        with fake:
+            pass
+        assert testing._switched_on() is inner
 
 
 async def test_jobs_outlive_a_client(fake: FakeOxylabs) -> None:

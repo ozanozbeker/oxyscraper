@@ -542,6 +542,26 @@ async def test_outcome_function(fake: FakeOxylabs) -> None:
             {"source": "google_search", "query": "x", "start_page": 2.5},
             "Invalid type for parameter `start_page`, supported types: `integer, string`.",
         ),
+        (
+            {"source": "amazon_search", "query": "x", "pages": "-1"},
+            "Parameter `pages` should be a positive integer.",
+        ),
+        (
+            {"source": "amazon_search", "query": "x", "pages": "two"},
+            "Invalid type for parameter `pages`, supported types: `integer, string`.",
+        ),
+        (
+            universal(pages=True),
+            "Invalid type for parameter `pages`, supported types: `integer, string`.",
+        ),
+        (
+            {"source": "amazon_search", "query": "x", "start_page": " 2"},
+            "Invalid type for parameter `start_page`, supported types: `integer, string`.",
+        ),
+        (
+            {"source": "amazon_search", "query": "x", "start_page": True},
+            "Invalid type for parameter `start_page`, supported types: `integer, string`.",
+        ),
         (universal(pages=21), "Parameter `pages` should not exceed 20."),
         (
             {"source": "google_search", "query": "x", "pages": 11},
@@ -714,6 +734,16 @@ async def test_start_page(fake: FakeOxylabs) -> None:
     assert job["start_page"] == batch["queries"][0]["start_page"] == 2
     assert result["page"] == realtime["results"][0]["page"] == 2
     assert walmart.json()["start_page"] == 0
+
+
+async def test_pages(fake: FakeOxylabs) -> None:
+    """A batch source takes `pages` as digits, and reads `null` as 1."""
+    payload = {"source": "amazon_search", "query": "x"}
+    async with client(fake) as http:
+        digits = (await http.post(DATA, json=payload | {"pages": "+2"})).json()
+        null = (await http.post(DATA, json=payload | {"pages": None})).json()
+    assert digits["pages"] == 2
+    assert null["pages"] == 1
 
 
 async def test_inputs_the_api_takes(fake: FakeOxylabs) -> None:

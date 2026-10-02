@@ -24,7 +24,7 @@ import anyio
 import httpx2
 from anyio.from_thread import start_blocking_portal
 
-from oxyscraper._payloads import _INPUT_KEYS, Payload, _redacted
+from oxyscraper._payloads import _INPUT_KEYS, Payload, _integer, _redacted
 from oxyscraper.testing import _switched_on
 
 if TYPE_CHECKING:
@@ -786,8 +786,8 @@ class DryRun:
     jobs
         Each job's body, with the credentials in `storage_url` replaced by `redacted:redacted`.
     max_results
-        The most results the jobs can bill: the sum of their `pages`, with 1 for a job without it.
-        Faulted jobs bill nothing, and a source that ignores `pages` bills 1, so a run can bill less.
+        The most results the jobs can bill: the sum of their `pages`, read as the API reads them, with 1 for a job without a positive one.
+        Rejected and faulted jobs bill nothing, and a source that ignores `pages` bills 1, so a run can bill less.
     """
 
     jobs: list[dict[str, Any]]
@@ -817,7 +817,10 @@ def dry_run(payloads: Payload | Iterable[Payload]) -> DryRun:
     ```
     """
     jobs = [_redacted(payload.model_dump()) for payload in _listed(payloads)]
-    return DryRun(jobs=jobs, max_results=sum(job.get("pages", 1) for job in jobs))
+    return DryRun(
+        jobs=jobs,
+        max_results=sum(max(_integer(job.get("pages")) or 1, 1) for job in jobs),
+    )
 
 
 def _listed(payloads: Payload | Iterable[Payload]) -> list[Payload]:

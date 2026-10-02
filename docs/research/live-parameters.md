@@ -222,6 +222,25 @@ Each source below that takes a batch took a positive integer, as a number or as 
 The rows for `amazon_search` with `0`, `-1` and `"two"` come from [Free checks](live-amazon.md#free-checks), on 2026-09-29.
 Each rejected payload to a source that takes a batch carried an empty input, so a check that passed could not bill.
 
+### `pages`
+
+[Close the gaps in Payload and dry_run](https://github.com/ozanozbeker/oxyscraper/issues/104) sent 23 Push-Pull submissions with an empty input on 2026-10-02, from 02:46 to 02:47 UTC, then two `amazon_search` jobs at 02:48.
+The plan expected 3 billed results, and the run billed 3.
+
+`pages` takes what `start_page` takes on a source that takes a batch: an integer, or ASCII digits in a string with an optional sign.
+`null` passes the check and runs as 1.
+
+| Value | Key and source | Status | Body |
+| --- | --- | --- | --- |
+| `"2"` | `pages` on `amazon_search`, `chatgpt`, `google_search` and `universal` | 400 | The empty-input message, so the value passes the check |
+| `"+2"`, `"02"` or `null` | `pages` on `amazon_search` | 400 | The empty-input message |
+| `"+2"` | `start_page` on `amazon_search` | 400 | The empty-input message |
+| `"0"` or `"-1"` | `pages` on `amazon_search` | 400 | ``Parameter `pages` should be a positive integer.`` |
+| `2.5`, `2.0`, `true`, `[2]`, `"two"`, `" 2"`, `"2 "`, `"2.0"`, `"1e1"` or `"٢"` | `pages` on `amazon_search` | 400 | ``Invalid type for parameter `pages`, supported types: `integer, string`.`` |
+| `" 2"`, `"2.0"` or `true` | `start_page` on `amazon_search` | 400 | ``Invalid type for parameter `start_page`, supported types: `integer, string`.`` |
+| `"+2"`, with a `query` | `pages` on `amazon_search` | 202 | `pages: 2` in the job object, and two results, for pages 1 and 2 |
+| `null`, with a `query` | `pages` on `amazon_search` | 202 | `pages: 1` in the job object, and one result |
+
 ## Keys by source
 
 [Reject the keys a source does not take](https://github.com/ozanozbeker/oxyscraper/issues/99) mapped the top-level keys of the 97 sources without batches on 2026-10-01, from 14:52 to 14:53 UTC.

@@ -6,7 +6,7 @@ Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the p
 The two entries on storage endpoints, the entry on a 400's `errors` list, the entries from the `universal` and Amazon runs and the entry on LLM sources through Realtime cite the pages as published on 2026-09-29.
 The entries on `pages` limits, on a job larger than a rate limit and from the job object run cite the pages as published on 2026-09-30.
 The entries from the input check run and the entry on secrets in `storage_url` cite the pages as published on 2026-10-01.
-The entry on `start_page` cites the pages as the catalog read them on 2026-09-24.
+The entry on `start_page` and `pages` cites the pages as the catalog read them on 2026-09-24.
 
 ## Statements the API contradicts
 
@@ -681,13 +681,15 @@ The entry on `start_page` cites the pages as the catalog read them on 2026-09-24
   `target_category` returned 400 with `[category_id]: Must be 5+ characters.` for a shorter `category_id`.
 - **Evidence:** [Input checks](docs/research/live-parameters.md#input-checks).
 
-### Start page: `amazon_search` takes digits as text, and `walmart_search` takes 0
+### Start page and pages: `amazon_search` takes digits as text, and `walmart_search` takes 0
 
-- **Docs:** the source pages give `start_page` as an integer with default 1, and no range.
+- **Docs:** the source pages give `start_page` and `pages` as integers with default 1, and no range.
 - **API:** `amazon_search`, `chatgpt`, `google_search` and `universal` returned ``Parameter `start_page` should be a positive integer.`` for 0.
   `amazon_search` took `"2"` as 2, and returned ``Invalid type for parameter `start_page`, supported types: `integer, string`.`` for `"two"` or `2.5`.
+  It took `pages` the same way: `"+2"` ran 2 pages, and `null` ran 1.
+  It returned the same `Invalid type` message for `pages: true` and `pages: " 2"`.
   `walmart_search` returned `[start_page]: This value should be of type int.` for any string, and took 0, which faulted the job.
-- **Evidence:** [`start_page`](docs/research/live-parameters.md#start_page).
+- **Evidence:** [`start_page`](docs/research/live-parameters.md#start_page) and [`pages`](docs/research/live-parameters.md#pages).
 
 [response-codes]: https://developers.oxylabs.io/products/web-scraper-api/response-codes
 [help-response-codes]: https://developers.oxylabs.io/help-center/troubleshooting/response-codes-for-web-scraper-api

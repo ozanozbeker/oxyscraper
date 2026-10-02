@@ -21,7 +21,7 @@ import anyio
 import httpx2
 from typing_extensions import override
 
-from oxyscraper._payloads import _CREDENTIALS
+from oxyscraper._payloads import _CREDENTIALS, _integer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1129,8 +1129,8 @@ def _check(payload: dict[str, Any]) -> Rejected | None:
     if source in _TAKES:
         return _field_check(source, payload)
     return (
-        _pages_error(source, payload.get("pages", 1))
-        or _start_page_error(payload.get("start_page"))
+        _pages_error(source, payload)
+        or _page_error("start_page", payload.get("start_page"))
         or _input_error(source, payload)
         or _source_error(source, payload)
     )
@@ -1256,9 +1256,10 @@ def _storage_error(payload: dict[str, Any]) -> Rejected | None:
     return None
 
 
-def _pages_error(source: str, pages: object) -> Rejected | None:
-    if not isinstance(pages, int) or pages < 1:
-        return Rejected("Parameter `pages` should be a positive integer.")
+def _pages_error(source: str, payload: dict[str, Any]) -> Rejected | None:
+    if error := _page_error("pages", payload.get("pages")):
+        return error
+    pages = _pages(payload)
     if pages > _MAX_PAGES:
         return Rejected(f"Parameter `pages` should not exceed {_MAX_PAGES}.")
     if pages > _PAGE_LIMITS.get(source, _MAX_PAGES):
@@ -1268,19 +1269,17 @@ def _pages_error(source: str, pages: object) -> Rejected | None:
     return None
 
 
-def _start_page_error(start_page: object) -> Rejected | None:
-    """Return the free 400 for a `start_page` on a source that takes a batch, which also takes digits as text."""
-    if start_page is None:
+def _page_error(key: str, value: object) -> Rejected | None:
+    """Return the free 400 for a `pages` or `start_page` on a source that takes a batch, which also takes digits as text."""
+    if value is None:
         return None
-    try:
-        first = int(start_page) if isinstance(start_page, int | str) else None
-    except ValueError:
-        first = None
-    if first is None:
-        message = "Invalid type for parameter `start_page`, supported types: `integer, string`."
-        return Rejected(message)
-    if first < 1:
-        return Rejected("Parameter `start_page` should be a positive integer.")
+    number = _integer(value)
+    if number is None:
+        return Rejected(
+            f"Invalid type for parameter `{key}`, supported types: `integer, string`."
+        )
+    if number < 1:
+        return Rejected(f"Parameter `{key}` should be a positive integer.")
     return None
 
 
@@ -1314,7 +1313,7 @@ def _rendered(payload: dict[str, Any]) -> bool:
 
 
 def _pages(payload: dict[str, Any]) -> int:
-    return payload.get("pages", 1)
+    return _integer(payload.get("pages")) or 1
 
 
 def _fetched(payload: dict[str, Any]) -> int:

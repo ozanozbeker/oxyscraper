@@ -1,9 +1,12 @@
+import asyncio
 import dataclasses
 import json
 import logging
 import math
 import random
 import re
+import signal
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -870,6 +873,95 @@ async def test_run_log_after_a_stop(
     assert warnings(caplog) == [
         f"Stopped with 1 job pending, which may still bill; the run log at {name} lists their IDs"
     ]
+
+
+@on_mock_clock
+async def test_stop_cancels_retries(fake: FakeOxylabs) -> None:
+    """Leaving the `with` block cancels a submission's retries, and its payload stays unsubmitted."""
+    fake.fail(503, on="submit", times=None)
+    async with open_async_session() as session:
+        started = anyio.current_time()
+        run = await session.stream(universal())
+        await anyio.sleep(5)
+    assert anyio.current_time() - started == 5
+    assert run.progress.unsubmitted == 1
+
+
+class Delayed(FakeOxylabs):
+    """Answer each submission after `delay` seconds, and set `sent` when one arrives."""
+
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self.delay = delay
+        self.sent = threading.Event()
+
+    @override
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        if request.method == "POST":
+            self.sent.set()
+            await anyio.sleep(self.delay)
+        return await super().handle_async_request(request)
+
+
+def ctrl_c(fake: Delayed, store: MemoryStore, *, twice: bool = False) -> None:
+    """Send Ctrl+C once the fake receives a batch, and again half a second later if `twice`."""
+    with open_session(transport=fake) as session:
+        session.execute([universal("1"), universal("2")], run_log=store)
+        fake.sent.wait()
+        if twice:
+            main = threading.main_thread().ident
+            threading.Timer(0.5, signal.pthread_kill, [main, signal.SIGINT]).start()
+        signal.raise_signal(signal.SIGINT)
+
+
+def test_ctrl_c_keeps_a_sent_batch() -> None:
+    """Ctrl+C while a batch's response is delayed raises `KeyboardInterrupt` itself, and the run log lists the batch's jobs."""
+    fake = Delayed(1)
+    store = MemoryStore()
+    with pytest.raises(KeyboardInterrupt):
+        ctrl_c(fake, store)
+    first, second = (job["id"] for job in fake.jobs)
+    assert logged(store) == [
+        record("unfetched", {"source": "universal", "url": f"{SANDBOX}/1"}, first),
+        record("unfetched", {"source": "universal", "url": f"{SANDBOX}/2"}, second),
+    ]
+
+
+@pytest.mark.skipif(
+    not hasattr(signal, "pthread_kill"), reason="Windows has no pthread_kill"
+)
+def test_second_ctrl_c() -> None:
+    """A second Ctrl+C while the session closes stops the sent batch at once, and leaves the run log empty."""
+    fake = Delayed(5)
+    store = MemoryStore()
+    with pytest.raises(KeyboardInterrupt):
+        ctrl_c(fake, store, twice=True)
+    assert fake.jobs == []
+    assert list(stored(store).values()) == [b""]
+
+
+async def cancel_twice(fake: Delayed, store: MemoryStore) -> None:
+    """Leave the block once the fake receives a batch, and cancel the task half a second later, as `asyncio.run` does after a second Ctrl+C."""
+    task = asyncio.current_task()
+    assert task is not None
+    async with open_async_session(transport=fake) as session:
+        await session.stream([universal("1"), universal("2")], run_log=store)
+        await anyio.to_thread.run_sync(fake.sent.wait)
+        asyncio.get_running_loop().call_later(0.5, task.cancel)
+
+
+@pytest.mark.parametrize("anyio_backend", ["asyncio"])
+async def test_second_stop_on_asyncio() -> None:
+    """The cancellation that `asyncio.run` sends after a second Ctrl+C stops the sent batch at once, and leaves the run log empty."""
+    fake = Delayed(5)
+    store = MemoryStore()
+    with pytest.raises(asyncio.CancelledError):
+        await cancel_twice(fake, store)
+    task = asyncio.current_task()
+    assert task is not None
+    task.uncancel()
+    assert fake.jobs == []
+    assert list(stored(store).values()) == [b""]
 
 
 def test_run_log_folder(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

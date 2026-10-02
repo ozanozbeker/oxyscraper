@@ -16,7 +16,7 @@ import os
 import posixpath
 import random
 import re
-from contextlib import AsyncExitStack, ExitStack
+from contextlib import AsyncExitStack, ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -337,6 +337,29 @@ class Progress:
 _State = Literal["unsubmitted", "pending", "done", "faulted", "rejected", "unfetched"]
 
 
+class _Shields:
+    """The cancel scopes that keep a step running through a stop by the caller, until a second Ctrl+C drops them."""
+
+    def __init__(self) -> None:
+        self._scopes: set[anyio.CancelScope] = set()
+        self._dropped = False
+
+    @contextmanager
+    def scope(self) -> Iterator[None]:
+        with anyio.CancelScope(shield=not self._dropped) as scope:
+            self._scopes.add(scope)
+            try:
+                yield
+            finally:
+                self._scopes.discard(scope)
+
+    def drop(self) -> None:
+        """Let the stop cancel every shielded step, open now or later."""
+        self._dropped = True
+        for scope in self._scopes:
+            scope.shield = False
+
+
 @dataclass(eq=False)
 class _Line:
     """What happened to one payload of a run."""
@@ -373,6 +396,7 @@ class _RunState:
     output_types: Sequence[_OutputType]
     destination: ObjectStore | None
     log: _RunLog | None
+    shields: _Shields
     # Cancelling `submitting` stops submission, and cancelling `running` stops the checks too.
     submitting: anyio.CancelScope = field(default_factory=anyio.CancelScope)
     running: anyio.CancelScope = field(default_factory=anyio.CancelScope)
@@ -423,10 +447,14 @@ class _RunState:
     async def write(self, store: ObjectStore, job_id: str, body: bytes) -> None:
         """Write a job's body, or stop submission and every later write if the write fails."""
         # A stop waits for the write, so the job still reaches the caller's loop.
-        with anyio.CancelScope(shield=True):
+        with self.shields.scope():
             try:
                 await anyio.to_thread.run_sync(
-                    obstore.put, store, f"{job_id}.json", body
+                    obstore.put,
+                    store,
+                    f"{job_id}.json",
+                    body,
+                    abandon_on_cancel=True,
                 )
             # obstore raises its own errors, and a store's credential provider may raise anything.
             except Exception as error:  # noqa: BLE001
@@ -496,7 +524,9 @@ class _RunState:
             json.dumps(_record(line)).encode() + b"\n" for line in self.lines
         )
         try:
-            await anyio.to_thread.run_sync(obstore.put, log.store, log.path, records)
+            await anyio.to_thread.run_sync(
+                obstore.put, log.store, log.path, records, abandon_on_cancel=True
+            )
         # obstore raises its own errors, and a store's credential provider may raise anything.
         except Exception as error:  # noqa: BLE001
             self.cause = self.cause or error
@@ -753,6 +783,8 @@ class AsyncSession:
         )
         # The sources whose batch returned `not available with a batch request`, so their payloads go out one per request.
         self._unbatched: set[str] = set()
+        self._shields = _Shields()
+        self._runs = 0
         self._stack = AsyncExitStack()
 
     async def __aenter__(self) -> Self:
@@ -762,12 +794,24 @@ class AsyncSession:
         # The streams close after the task group exits, so no task sends into a closed stream.
         self._streams = self._stack.enter_context(ExitStack())
         self._tasks = await self._stack.enter_async_context(anyio.create_task_group())
-        self._stack.callback(self._tasks.cancel_scope.cancel)
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
-        """Stop every unfinished run, and close the client."""
-        await self._stack.aclose()
+        """Stop every unfinished run, and close the client.
+
+        A second Ctrl+C while the runs stop makes them stop at once, without their run logs.
+        """
+        self._tasks.cancel_scope.cancel()
+        try:
+            # Only a second Ctrl+C gets through: trio raises `KeyboardInterrupt` here, and `asyncio.run` cancels every task.
+            with anyio.CancelScope(shield=True):
+                if self._runs:
+                    await self._idle.wait()
+        except BaseException:
+            self._shields.drop()
+            raise
+        finally:
+            await self._stack.aclose()
 
     async def execute(
         self,
@@ -819,7 +863,7 @@ class AsyncSession:
             The folder that oxy writes the run log to, as `<run start>.jsonl`, with one JSON line per payload in input order.
             It takes the same types as `destination`.
             oxy writes an empty file before the first submission, and replaces it when the run ends or stops.
-            So an empty file means the process was killed, and jobs may have billed without a record.
+            So an empty file means a second Ctrl+C or a killed process, and jobs may have billed without a record.
         output_types
             The output types of each result, sent as the API's `type` parameter.
             Empty returns the default type of each job.
@@ -863,7 +907,11 @@ class AsyncSession:
             output_types=output_types,
             destination=store,
             log=log,
+            shields=self._shields,
         )
+        if not self._runs:
+            self._idle = anyio.Event()
+        self._runs += 1
         self._tasks.start_soon(self._run, state)
         return AsyncRun(receive, state)
 
@@ -898,24 +946,31 @@ class AsyncSession:
             "Realtime" if state.realtime else "Push-Pull",
         )
         stopped = True
-        async with state.send:
-            try:
-                async with anyio.create_task_group() as reports:
-                    if self._progress_interval is not None:
-                        reports.start_soon(self._report, state, self._progress_interval)
-                    with state.running:
-                        async with anyio.create_task_group() as checks:
-                            with state.submitting:
-                                async with anyio.create_task_group() as submissions:
-                                    await self._submit(state, checks, submissions)
-                    reports.cancel_scope.cancel()
-                stopped = False
-            finally:
-                # A stop by the caller ends the run too, so the run log records the jobs it left pending.
-                with anyio.CancelScope(shield=True):
-                    halted = state.end(stopped=stopped)
-                    if state.log is not None:
-                        await state.save(state.log, halted)
+        try:
+            async with state.send:
+                try:
+                    async with anyio.create_task_group() as reports:
+                        if self._progress_interval is not None:
+                            reports.start_soon(
+                                self._report, state, self._progress_interval
+                            )
+                        with state.running:
+                            async with anyio.create_task_group() as checks:
+                                with state.submitting:
+                                    async with anyio.create_task_group() as submissions:
+                                        await self._submit(state, checks, submissions)
+                        reports.cancel_scope.cancel()
+                    stopped = False
+                finally:
+                    # A stop by the caller ends the run too, so the run log records the jobs it left pending.
+                    with self._shields.scope():
+                        halted = state.end(stopped=stopped)
+                        if state.log is not None:
+                            await state.save(state.log, halted)
+        finally:
+            self._runs -= 1
+            if not self._runs:
+                self._idle.set()
 
     async def _report(self, state: _RunState, interval: float) -> None:
         while True:
@@ -1296,7 +1351,7 @@ class AsyncSession:
             try:
                 async with self._hosts[httpx2.URL(url).host]:
                     # The API may create a job once a submission is sent, so a stop lets the attempt finish and keeps the job's ID.
-                    with anyio.CancelScope(shield=method == "POST"):
+                    with self._shields.scope() if method == "POST" else nullcontext():
                         response = await self._http.request(
                             method,
                             url,
@@ -1354,6 +1409,8 @@ class Session:
     def __enter__(self) -> Self:
         """Start the portal, and open the session inside it."""
         self._portal = self._stack.enter_context(start_blocking_portal())
+        # It runs after the session closes and before the portal waits for its thread.
+        self._stack.push(self._interrupted)
         self._stack.enter_context(
             self._portal.wrap_async_context_manager(self._session)
         )
@@ -1399,6 +1456,11 @@ class Session:
         return self._portal.call(
             partial(self._session.get, job_id, output_types=output_types)
         )
+
+    def _interrupted(self, kind: type[BaseException] | None, *_: object) -> None:
+        """Stop at once if an exception, such as a second Ctrl+C, interrupted the wait for the session to close."""
+        if kind is not None:
+            self._portal.call(self._session._shields.drop)  # noqa: SLF001
 
     def _progress(self, run: AsyncRun) -> Progress:
         """Read the run's progress in the event loop's thread, which reads the loop's clock."""

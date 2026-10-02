@@ -704,3 +704,201 @@ async def test_get_raises(fake: FakeOxylabs) -> None:
         "Internal Server Error",
         f"{2:08x}-{'0' * 24}",
     )
+
+
+def progress(**counts: Any) -> oxy.Progress:
+    states = ("unsubmitted", "pending", "done", "faulted", "rejected", "unfetched")
+    totals = dict.fromkeys((*states, "written", "uploaded", "unuploaded", "retries"), 0)
+    totals |= counts
+    return oxy.Progress(
+        payloads=sum(totals[state] for state in states), **totals, elapsed=timedelta()
+    )
+
+
+@pytest.mark.parametrize(
+    ("counts", "elapsed", "shown"),
+    [
+        (
+            {
+                "done": 412,
+                "faulted": 3,
+                "pending": 1250,
+                "unsubmitted": 6935,
+                "retries": 12,
+            },
+            timedelta(seconds=45.21),
+            "412/8,600 done, 3 faulted, 1,250 pending, 6,935 unsubmitted, 12 retries, 45.21s",
+        ),
+        (
+            {"unsubmitted": 1, "retries": 1},
+            timedelta(milliseconds=312),
+            "0/1 done, 1 unsubmitted, 1 retry, 312ms",
+        ),
+        (
+            {"done": 2, "rejected": 1, "unfetched": 1},
+            timedelta(seconds=4.02),
+            "2/4 done, 1 rejected, 1 unfetched, 4.02s",
+        ),
+        (
+            {"done": 2, "written": 2, "uploaded": 1, "unuploaded": 1},
+            timedelta(seconds=65),
+            "2/2 done, 2 written, 1 uploaded, 1 unuploaded, 1m 05s",
+        ),
+        (
+            {"done": 1},
+            timedelta(hours=2, minutes=24, seconds=5.9),
+            "1/1 done, 2h 24m 05s",
+        ),
+    ],
+)
+def test_progress_str(counts: dict[str, int], elapsed: timedelta, shown: str) -> None:
+    """`str(Progress)` leaves out zero counts and formats the elapsed time as uv does."""
+    assert str(dataclasses.replace(progress(**counts), elapsed=elapsed)) == shown
+
+
+SIX = ("unsubmitted", "pending", "done", "faulted", "rejected", "unfetched")
+
+
+@on_mock_clock
+async def test_progress_sums_to_payloads() -> None:
+    """Every snapshot's six states sum to `payloads`, and the last one matches the error's lists."""
+
+    def outcome(payload: dict[str, Any]) -> Outcome:
+        page = int(payload["url"].rsplit("/", 1)[1])
+        return Outcome(status="faulted" if page % 4 == 0 else "done", after=page)
+
+    fake = FakeOxylabs(outcome)
+    payloads = [universal(str(page)) for page in range(1, 9)]
+    payloads.append(oxy.Payload(source="universal", url="https://10.0.0.1/"))
+    async with open_async_session(transport=fake, pending_limit=6) as session:
+        run = await session.stream(payloads)
+        snapshots = [run.progress]
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(incomplete, run)
+            for _ in range(20):
+                await anyio.sleep(0.5)
+                snapshots.append(run.progress)
+        error = await incomplete(run)
+    last = run.progress
+    assert {
+        sum(getattr(snapshot, state) for state in SIX) for snapshot in snapshots
+    } == {9}
+    assert snapshots[0] == dataclasses.replace(
+        progress(unsubmitted=9), elapsed=timedelta()
+    )
+    assert snapshots[3] == dataclasses.replace(
+        progress(pending=7, done=1, rejected=1), elapsed=timedelta(seconds=1.5)
+    )
+    assert last == dataclasses.replace(
+        progress(done=5, faulted=1, rejected=1, unfetched=2),
+        elapsed=timedelta(seconds=6),
+    )
+    assert (last.rejected, last.unsubmitted, last.unfetched) == (
+        len(error.rejections),
+        len(error.unsubmitted),
+        len(error.unfetched),
+    )
+
+
+def lines(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "oxyscraper" and record.levelno == level
+    ]
+
+
+@on_mock_clock
+@pytest.mark.parametrize(
+    ("interval", "periodic"),
+    [
+        (10, ["0/2 done, 2 pending, 10.00s", "0/2 done, 2 pending, 20.00s"]),
+        (None, []),
+    ],
+)
+async def test_info_lines(
+    caplog: pytest.LogCaptureFixture, interval: float | None, periodic: list[str]
+) -> None:
+    """A run writes its start, a progress line every `progress_interval` seconds while a payload is pending, and its end."""
+    caplog.set_level(logging.INFO, "oxyscraper")
+    fake = FakeOxylabs(Outcome(after=25))
+    async with open_async_session(
+        transport=fake, progress_interval=interval
+    ) as session:
+        await session.execute([universal("1"), universal("2")])
+        await anyio.sleep(30)
+    assert lines(caplog, logging.INFO) == [
+        "Running 2 payloads with Push-Pull",
+        *periodic,
+        "Finished 2 payloads in 25.00s: 2 done",
+    ]
+
+
+@on_mock_clock
+async def test_stopped_line(caplog: pytest.LogCaptureFixture) -> None:
+    """A run that a failure stops ends with a line that names each state and the retries."""
+    caplog.set_level(logging.INFO, "oxyscraper")
+
+    def outcome(payload: dict[str, Any]) -> Outcome:
+        fake.fail(401, on="submit", times=None)
+        return Outcome(after=math.inf)
+
+    fake = FakeOxylabs(outcome)
+    fake.fail(503, on="submit")
+    async with open_async_session(transport=fake, pending_limit=None) as session:
+        run = await session.stream([universal("1"), universal("2"), universal("3")])
+        await anyio.sleep(2.5)
+        fake.fail(401, on="results", times=None)
+        await incomplete(run)
+    assert lines(caplog, logging.INFO)[-1] == (
+        "Stopped 3 payloads after 3.00s: 0 done, 1 unfetched, 2 unsubmitted, 1 retry"
+    )
+
+
+@on_mock_clock
+async def test_debug_lines(
+    fake: FakeOxylabs, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run writes each change of state and each retry at DEBUG, with `storage_url` credentials redacted."""
+
+    def uniform(low: float, high: float) -> float:
+        return high / 2
+
+    monkeypatch.setattr(random, "uniform", uniform)
+    caplog.set_level(logging.DEBUG, "oxyscraper")
+    fake.fail(503, on="results", times=2)
+    payload = universal(
+        storage_type="s3_compatible",
+        storage_url="https://key-id:s3cr3t@storage.example.com/bucket/folder",
+    )
+    async with open_async_session() as session:
+        run = await session.stream(payload)
+        [job] = await run.all()
+    results = f"https://data.oxylabs.io/v1/queries/{job.id}/results"
+    assert lines(caplog, logging.DEBUG) == [
+        f"Job {job.id} is pending: {payload!r}",
+        f"Retrying GET {results} in 500ms after 503 Service Unavailable",
+        f"Retrying GET {results} in 1.00s after 503 Service Unavailable",
+        f"Job {job.id} is done: {payload!r}",
+    ]
+    assert "redacted:redacted" in repr(payload)
+    assert not any("s3cr3t" in record.getMessage() for record in caplog.records)
+    assert run.progress.retries == 2
+
+
+def test_session_progress() -> None:
+    """A `Session` run's progress reads mid-run from the caller's thread, and stops changing after the run ends."""
+    payloads = [universal(str(page)) for page in range(3)]
+    with open_session() as session:
+        run = session.execute(payloads)
+        started = run.progress
+        jobs = iter(run)
+        next(jobs)
+        middle = run.progress
+        list(jobs)
+        ended = run.progress
+    assert started.unsubmitted + started.pending == 3
+    assert middle.done >= 1
+    assert sum(getattr(middle, state) for state in SIX) == 3
+    assert (ended.done, ended.elapsed >= timedelta(seconds=1)) == (3, True)
+    assert run.progress == ended

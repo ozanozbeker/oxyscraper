@@ -1,6 +1,6 @@
 """Code a caller writes against sessions, which `pyrefly check --expectations` checks."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal, assert_type
 
 import oxyscraper as oxy
@@ -12,6 +12,8 @@ with oxy.Session(username="USERNAME", password="PASSWORD") as session:  # noqa: 
     assert_type(run, oxy.Run)
     assert_type(run.one(), oxy.Job)
     assert_type(run.all(), list[oxy.Job])
+    assert_type(run.progress, oxy.Progress)
+    assert_type(run.progress.elapsed, timedelta)
     for jobs in run.partitions(10):
         assert_type(jobs, list[oxy.Job])
     job = session.get("7500000000000000001")
@@ -47,4 +49,5 @@ async def stream() -> None:
         async for job in run:
             assert_type(job, oxy.Job)
         assert_type(await run.all(), list[oxy.Job])
+        assert_type(run.progress, oxy.Progress)
         assert_type(await session.execute(payload), oxy.Run)

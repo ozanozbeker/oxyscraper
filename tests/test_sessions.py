@@ -81,17 +81,18 @@ class Slow(FakeOxylabs):
 
 
 class Garbled(FakeOxylabs):
-    """Answer the first results download with a body that is not JSON."""
+    """Answer the first results download with `body`."""
 
-    def __init__(self) -> None:
+    def __init__(self, body: str) -> None:
         super().__init__()
+        self.body = body
         self.garbled = 0
 
     @override
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         if request.url.path.endswith("/results") and not self.garbled:
             self.garbled += 1
-            return httpx2.Response(200, text="<html>")
+            return httpx2.Response(200, text=self.body)
         return await super().handle_async_request(request)
 
 
@@ -181,6 +182,28 @@ async def test_check_schedule() -> None:
     assert checks(fake) == 11
     assert elapsed == 15
     assert job.finished_at == START + timedelta(seconds=12)
+
+
+@on_mock_clock
+async def test_delayed_check_sends_no_burst(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A check delayed past later checks in the schedule skips them, and sends the next one on time."""
+
+    def uniform(low: float, high: float) -> float:
+        return high
+
+    monkeypatch.setattr(random, "uniform", uniform)
+    fake = FakeOxylabs(Outcome(after=30))
+    # The first check fails 4 times and waits 1, 2, 4 and 8 seconds, so it ends 16 seconds after the submission.
+    fake.fail(503, on="results", times=4)
+    async with open_async_session(transport=fake) as session:
+        started = anyio.current_time()
+        job = (await session.execute(universal())).one()
+        elapsed = anyio.current_time() - started
+    # 5 requests at 1 to 16 seconds, then one check each at 20, 25 and 30.
+    assert checks(fake) == 8
+    assert (job.status, elapsed) == ("done", 30)
 
 
 @on_mock_clock
@@ -286,13 +309,14 @@ THROTTLE = "Access to sandbox.oxylabs.io has been limited to 1 req/s due to a lo
         httpx2.ReadTimeout("no answer"),
         httpx2.ConnectError("refused"),
         httpx2.RemoteProtocolError("closed"),
+        httpx2.DecodingError("bad gzip"),
     ],
 )
 @pytest.mark.parametrize("on", ["submit", "results"])
 async def test_retries(
     fake: FakeOxylabs, error: int | Exception, on: Literal["submit", "results"]
 ) -> None:
-    """oxy retries a 429, a 5xx and a network error on a submission and on a check."""
+    """oxy retries a 429, a 5xx, a network error and a body that does not decode on a submission and on a check."""
     fake.fail(error, on=on, times=3)
     async with open_async_session() as session:
         job = (await session.execute(universal())).one()
@@ -301,9 +325,18 @@ async def test_retries(
 
 
 @on_mock_clock
-async def test_retries_a_body_that_is_not_json() -> None:
-    """A 2xx whose body does not parse retries."""
-    fake = Garbled()
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<html>",
+        "{}",
+        '{"job": {"status": "done"}, "results": [{"page": 1, "type": "png", "status_code": 200, "content": "a"}]}',
+    ],
+    ids=["not JSON", "no job", "bad Base64"],
+)
+async def test_retries_a_body_that_does_not_parse(body: str) -> None:
+    """A 2xx whose body oxy cannot read retries."""
+    fake = Garbled(body)
     async with open_async_session(transport=fake) as session:
         job = (await session.execute(universal())).one()
     assert (job.status, fake.garbled) == ("done", 1)
@@ -315,6 +348,7 @@ async def test_retries_a_body_that_is_not_json() -> None:
     [
         (503, "503 Service Unavailable"),
         (httpx2.ReadTimeout("no answer"), "ReadTimeout: no answer"),
+        (httpx2.DecodingError("bad gzip"), "DecodingError: bad gzip"),
         (httpx2.ConnectError("refused"), None),
         (429, None),
     ],
@@ -594,6 +628,17 @@ async def test_faulted(caplog: pytest.LogCaptureFixture) -> None:
         job = (await session.execute(payload)).one()
     assert job.status == "faulted"
     assert warnings(caplog) == [f"Job {job.id} faulted: universal {payload.url}"]
+
+
+@on_mock_clock
+async def test_faulted_without_results() -> None:
+    """A run yields a faulted job whose results endpoint returns 204, with no results."""
+    fake = FakeOxylabs(Outcome(status="faulted", after=3, expires_after=0))
+    payload = universal()
+    async with open_async_session(transport=fake) as session:
+        job = (await session.execute(payload)).one()
+    assert (job.status, job.results, job.payload) == ("faulted", [], payload)
+    assert job.finished_at == START + timedelta(seconds=3)
 
 
 def test_all_keeps_collected_jobs() -> None:

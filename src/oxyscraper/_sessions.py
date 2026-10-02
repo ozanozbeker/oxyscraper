@@ -42,6 +42,10 @@ _Limit = Literal["total-requests", "total-render-requests"]
 
 _DATA = "https://data.oxylabs.io/v1/queries"
 _BATCH = f"{_DATA}/batch"
+_REALTIME = "https://realtime.oxylabs.io/v1/queries"
+# The API returns 408 after about 160 seconds, and a read timeout of 300 seconds waits for it.
+_REALTIME_TIMEOUTS = httpx2.Timeout(5.0, read=300.0)
+_TIMED_OUT = "Realtime returns 408 for a job that runs 150 seconds or longer, so run this payload with Push-Pull"
 _BATCH_KEYS = ("query", "url", "prompt")
 _MAX_BATCH = 5000
 _USER_AGENT = f"oxyscraper/{version('oxyscraper')}"
@@ -346,6 +350,7 @@ class _RunState:
     lines: list[_Line]
     send: MemoryObjectSendStream[Job]
     waiting: anyio.Semaphore
+    realtime: bool
     output_types: Sequence[_OutputType]
     # Cancelling `submitting` stops submission, and cancelling `running` stops the checks too.
     submitting: anyio.CancelScope = field(default_factory=anyio.CancelScope)
@@ -383,6 +388,15 @@ class _RunState:
         if line.job:
             _logger.debug("Job %s is %s: %r", line.job.id, state, line.payload)
 
+    def finish(self, line: _Line, job: Job) -> None:
+        """Record a finished job, and send it to the caller's loop, for which it holds a `waiting` slot."""
+        line.job = job
+        self.move(line, job.status)
+        if job.status == "faulted":
+            _logger.warning("Job %s faulted: %s %s", job.id, job.source, job.input)
+        # `send` checks for cancellation first, so a stop would lose the fetched job.
+        self.send.send_nowait(job)
+
     def progress(self) -> Progress:
         end = anyio.current_time() if self.ended is None else self.ended
         return replace(
@@ -396,10 +410,14 @@ class _RunState:
         scope.cancel()
 
     def end(self) -> None:
-        """Count the jobs that a stop left pending as unfetched, set the run's end, and log it."""
-        halted = [line for line in self.lines if line.state == "pending"]
-        for line in halted:
-            self.move(line, "unfetched")
+        """Count the jobs that a stop left pending as unfetched, set the run's end, and log it.
+
+        A Realtime submission that a stop cancelled has no job, so its payload counts as unsubmitted.
+        """
+        halted = [line for line in self.lines if line.state == "pending" and line.job]
+        for line in self.lines:
+            if line.state == "pending":
+                self.move(line, "unfetched" if line.job else "unsubmitted")
         self.ended = anyio.current_time()
         if self.cause is not None:
             because = _because(self.cause)
@@ -688,19 +706,21 @@ class AsyncSession:
         self,
         payloads: Payload | Iterable[Payload],
         *,
+        realtime: bool = False,
         output_types: Sequence[_OutputType] = (),
     ) -> Run:
         """Run the payloads, and return the run once its last job finishes.
 
         It takes the arguments of `stream`.
         """
-        run = await self.stream(payloads, output_types=output_types)
+        run = await self.stream(payloads, realtime=realtime, output_types=output_types)
         return Run(iter(await run.all()), lambda: run.progress)
 
     async def stream(
         self,
         payloads: Payload | Iterable[Payload],
         *,
+        realtime: bool = False,
         output_types: Sequence[_OutputType] = (),
     ) -> AsyncRun:
         """Start a run, and return its jobs as they finish.
@@ -709,17 +729,30 @@ class AsyncSession:
         ----------
         payloads
             One payload or several, each submitted as one job.
+        realtime
+            Submit each payload through Realtime, one request per payload, instead of Push-Pull.
+            oxy never falls back from one integration method to the other.
         output_types
             The output types of each result, sent as the API's `type` parameter.
             Empty returns the default type of each job.
+
+        Raises
+        ------
+        ValueError
+            If `realtime` is set and a payload sets `storage_type`.
         """
+        lines = [_Line(payload) for payload in _listed(payloads)]
+        if realtime and any("storage_type" in line.body for line in lines):
+            msg = "a payload that sets storage_type runs only through Push-Pull, so call without realtime=True"
+            raise ValueError(msg)
         send, receive = anyio.create_memory_object_stream[Job](math.inf)
         self._streams.callback(receive.close)
         state = _RunState(
-            lines=[_Line(payload) for payload in _listed(payloads)],
+            lines=lines,
             send=send,
             # A finished job holds a slot until the caller's loop takes it, so at most 100 wait in memory.
             waiting=anyio.Semaphore(_MAX_WAITING),
+            realtime=realtime,
             output_types=output_types,
         )
         self._tasks.start_soon(self._run, state)
@@ -750,7 +783,11 @@ class AsyncSession:
         return await self._status(job_id, fetched)
 
     async def _run(self, state: _RunState) -> None:
-        _logger.info("Running %s with Push-Pull", _counted(len(state.lines), "payload"))
+        _logger.info(
+            "Running %s with %s",
+            _counted(len(state.lines), "payload"),
+            "Realtime" if state.realtime else "Push-Pull",
+        )
         try:
             async with state.send, anyio.create_task_group() as reports:
                 if self._progress_interval is not None:
@@ -759,10 +796,7 @@ class AsyncSession:
                     async with anyio.create_task_group() as checks:
                         with state.submitting:
                             async with anyio.create_task_group() as submissions:
-                                for lines in _groups(state.lines):
-                                    await self._dispatch(
-                                        state, lines, checks, submissions
-                                    )
+                                await self._submit(state, checks, submissions)
                 reports.cancel_scope.cancel()
                 state.end()
         finally:
@@ -774,6 +808,16 @@ class AsyncSession:
         while True:
             await anyio.sleep(interval)
             _logger.info("%s", state.progress())
+
+    async def _submit(
+        self, state: _RunState, checks: TaskGroup, submissions: TaskGroup
+    ) -> None:
+        if state.realtime:
+            for line in state.lines:
+                await submissions.start(self._call, state, line)
+            return
+        for lines in _groups(state.lines):
+            await self._dispatch(state, lines, checks, submissions)
 
     async def _dispatch(
         self,
@@ -852,6 +896,53 @@ class AsyncSession:
             return
         self._match(state, lines, jobs, errors, checks)
 
+    async def _call(
+        self,
+        state: _RunState,
+        line: _Line,
+        *,
+        task_status: TaskStatus[None] = anyio.TASK_STATUS_IGNORED,
+    ) -> None:
+        """Submit one payload through Realtime, whose response holds the finished job."""
+        cost = _cost(line.body)
+        # The response holds the finished job, so the submission takes the job's slot.
+        await state.waiting.acquire()
+        await self._budgets.take(cost)
+        task_status.started()
+        state.move(line, "pending")
+
+        def read(response: httpx2.Response) -> Job:
+            body = response.json()
+            return _job(body["job"], body["results"], payload=line.payload)
+
+        try:
+            job = await self._request(
+                "POST",
+                _REALTIME,
+                read,
+                json=line.body,
+                params=_params(state.output_types),
+                state=state,
+                cost=cost,
+                timeouts=_REALTIME_TIMEOUTS,
+            )
+        except OxylabsError as error:
+            state.waiting.release()
+            status, trace_id = error.status_code, error.trace_id
+            if _too_many(error) and (
+                message := _oversized(line.body, self._budgets.limits)
+            ):
+                _reject(state, line, httpx2.codes.TOO_MANY_REQUESTS, message, trace_id)
+            elif status == httpx2.codes.REQUEST_TIMEOUT:
+                _reject(state, line, status, f"{error.message} {_TIMED_OUT}", trace_id)
+            elif status in _REJECTED:
+                _reject(state, line, status, error.message, trace_id)
+            else:
+                state.move(line, "unsubmitted")
+                state.stop(error, state.submitting)
+            return
+        state.finish(line, job)
+
     def _match(
         self,
         state: _RunState,
@@ -892,14 +983,7 @@ class AsyncSession:
         submissions: TaskGroup,
     ) -> None:
         """Reject payloads whose pages exceed a limit, or submit them again in batches that fit the limits."""
-        limits = self._budgets.limits
-        if over := [
-            (name, pages)
-            for name, pages in _cost(lines[0].body).items()
-            if pages > limits[name]
-        ]:
-            name, pages = over[0]
-            message = f"The payload's {pages} pages exceed the {name} limit of {limits[name]}, so the API returns 429 for it in every window"
+        if message := _oversized(lines[0].body, self._budgets.limits):
             for line in lines:
                 _reject(
                     state,
@@ -952,14 +1036,7 @@ class AsyncSession:
                 )
                 return
             if isinstance(fetched, Job):
-                job = line.job = fetched
-                state.move(line, job.status)
-                if job.status == "faulted":
-                    _logger.warning(
-                        "Job %s faulted: %s %s", job.id, job.source, job.input
-                    )
-                # `send` checks for cancellation first, so a stop would lose the fetched job.
-                state.send.send_nowait(job)
+                state.finish(line, fetched)
                 return
             state.waiting.release()
             limit = self._pending_limit
@@ -982,7 +1059,6 @@ class AsyncSession:
         state: _RunState | None = None,
     ) -> Job | str:
         """Fetch a job with its results, or the status that a 204 names for a job with none."""
-        params = {"type": ",".join(output_types)} if output_types else None
 
         def read(response: httpx2.Response) -> Job | str:
             if response.status_code == httpx2.codes.NO_CONTENT:
@@ -991,7 +1067,11 @@ class AsyncSession:
             return _job(body["job"], body["results"], payload=payload)
 
         return await self._request(
-            "GET", f"{_DATA}/{job_id}/results", read, params=params, state=state
+            "GET",
+            f"{_DATA}/{job_id}/results",
+            read,
+            params=_params(output_types),
+            state=state,
         )
 
     async def _status(
@@ -1019,12 +1099,14 @@ class AsyncSession:
         params: Mapping[str, str] | None = None,
         state: _RunState | None = None,
         cost: Mapping[_Limit, int] | None = None,
+        timeouts: httpx2.Timeout | None = None,
     ) -> _T:
         """Send a request under the retry policy, and return what `read` returns for the response.
 
         Each retry counts toward the retries of `state`, the run that sent the request.
         A submission passes its `cost`, which paces each retry, while the caller paces the first attempt.
         A 429 that leaves the cost above a limit raises, so the caller can resize the submission.
+        `timeouts` replaces the client's timeouts.
 
         Raises
         ------
@@ -1036,7 +1118,13 @@ class AsyncSession:
         while True:
             try:
                 return await self._attempt(
-                    method, url, read, json=json, params=params, paced=cost is not None
+                    method,
+                    url,
+                    read,
+                    json=json,
+                    params=params,
+                    paced=cost is not None,
+                    timeouts=timeouts,
                 )
             except OxylabsError as error:
                 now = anyio.current_time()
@@ -1088,6 +1176,7 @@ class AsyncSession:
         json: dict[str, Any] | None,
         params: Mapping[str, str] | None,
         paced: bool,
+        timeouts: httpx2.Timeout | None,
     ) -> _T:
         try:
             try:
@@ -1095,7 +1184,11 @@ class AsyncSession:
                     # The API may create a job once a submission is sent, so a stop lets the attempt finish and keeps the job's ID.
                     with anyio.CancelScope(shield=method == "POST"):
                         response = await self._http.request(
-                            method, url, json=json, params=params
+                            method,
+                            url,
+                            json=json,
+                            params=params,
+                            timeout=timeouts or self._http.timeout,
                         )
             except BaseException:
                 if paced:
@@ -1160,6 +1253,7 @@ class Session:
         self,
         payloads: Payload | Iterable[Payload],
         *,
+        realtime: bool = False,
         output_types: Sequence[_OutputType] = (),
     ) -> Run:
         """Start a run, and return its jobs as they finish.
@@ -1167,7 +1261,12 @@ class Session:
         It takes the arguments of `AsyncSession.stream`.
         """
         run = self._portal.call(
-            partial(self._session.stream, payloads, output_types=output_types)
+            partial(
+                self._session.stream,
+                payloads,
+                realtime=realtime,
+                output_types=output_types,
+            )
         )
         # A generator ends once it raises, and `iter` with a sentinel calls again, so a second `all` raises too.
         return Run(
@@ -1272,6 +1371,18 @@ def _cost(body: Mapping[str, Any], values: int = 1) -> dict[_Limit, int]:
     rendered = bool(body.get("render")) or body.get("xhr") is True
     names: list[_Limit] = ["total-requests", "total-render-requests"]
     return dict.fromkeys(names[: 1 + rendered], values * _pages(body))
+
+
+def _params(output_types: Sequence[_OutputType]) -> dict[str, str] | None:
+    return {"type": ",".join(output_types)} if output_types else None
+
+
+def _oversized(body: Mapping[str, Any], limits: Mapping[_Limit, int]) -> str | None:
+    """Return why the API returns 429 for a payload like `body` in every window, if it does."""
+    for name, pages in _cost(body).items():
+        if pages > limits[name]:
+            return f"The payload's {pages} pages exceed the {name} limit of {limits[name]}, so the API returns 429 for it in every window"
+    return None
 
 
 def _reject(

@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import posixpath
 import random
 import re
 from contextlib import AsyncExitStack, ExitStack
@@ -344,9 +345,21 @@ class _Line:
     state: _State = "unsubmitted"
     job: Job | None = None
     rejection: Rejection | None = None
+    # The error that left the payload unsubmitted or unfetched.
+    error: Exception | None = None
 
     def __post_init__(self) -> None:
         self.body = self.payload.model_dump()
+
+
+@dataclass(frozen=True)
+class _RunLog:
+    """Where a run writes its run log."""
+
+    store: ObjectStore
+    path: str
+    # The path as the caller named it, for the log lines.
+    shown: str
 
 
 @dataclass(eq=False)
@@ -359,6 +372,7 @@ class _RunState:
     realtime: bool
     output_types: Sequence[_OutputType]
     destination: ObjectStore | None
+    log: _RunLog | None
     # Cancelling `submitting` stops submission, and cancelling `running` stops the checks too.
     submitting: anyio.CancelScope = field(default_factory=anyio.CancelScope)
     running: anyio.CancelScope = field(default_factory=anyio.CancelScope)
@@ -438,8 +452,8 @@ class _RunState:
         self.cause = self.cause or error
         scope.cancel()
 
-    def end(self) -> None:
-        """Count the jobs that a stop left pending as unfetched, set the run's end, and log it.
+    def end(self, *, stopped: bool) -> int:
+        """Count the jobs that a stop left pending as unfetched, set the run's end, log it, and return the number of those jobs.
 
         A Realtime submission that a stop cancelled has no job, so its payload counts as unsubmitted.
         """
@@ -447,6 +461,9 @@ class _RunState:
         for line in self.lines:
             if line.state == "pending":
                 self.move(line, "unfetched" if line.job else "unsubmitted")
+                line.error = self.cause
+            elif line.state == "unsubmitted":
+                line.error = self.cause
         self.ended = anyio.current_time()
         if self.cause is not None:
             because = _because(self.cause)
@@ -465,12 +482,33 @@ class _RunState:
         summary = self.progress()
         _logger.info(
             "Finished %s in %s: %s"
-            if self.cause is None
+            if self.cause is None and not stopped
             else "Stopped %s after %s: %s",
             _counted(summary.payloads, "payload"),
             _duration(summary.elapsed.total_seconds()),
             ", ".join([f"{summary.done:,} done", *_counts(summary)]),
         )
+        return len(halted)
+
+    async def save(self, log: _RunLog, halted: int) -> None:
+        """Replace the run log with one line per payload, or make the run raise if the write fails."""
+        records = b"".join(
+            json.dumps(_record(line)).encode() + b"\n" for line in self.lines
+        )
+        try:
+            await anyio.to_thread.run_sync(obstore.put, log.store, log.path, records)
+        # obstore raises its own errors, and a store's credential provider may raise anything.
+        except Exception as error:  # noqa: BLE001
+            self.cause = self.cause or error
+            _logger.warning("Writing the run log to %s failed: %s", log.shown, error)
+            return
+        _logger.info("Wrote the run log to %s", log.shown)
+        if halted:
+            _logger.warning(
+                "Stopped with %s pending, which may still bill; the run log at %s lists their IDs",
+                _counted(halted, "job"),
+                log.shown,
+            )
 
     def error(self) -> IncompleteRunError | None:
         rejections = [line.rejection for line in self.lines if line.rejection]
@@ -737,6 +775,7 @@ class AsyncSession:
         *,
         realtime: bool = False,
         destination: str | os.PathLike[str] | ObjectStore | None = None,
+        run_log: str | os.PathLike[str] | ObjectStore | None = None,
         output_types: Sequence[_OutputType] = (),
     ) -> Run:
         """Run the payloads, and return the run once its last job finishes.
@@ -747,6 +786,7 @@ class AsyncSession:
             payloads,
             realtime=realtime,
             destination=destination,
+            run_log=run_log,
             output_types=output_types,
         )
         return Run(iter(await run.all()), lambda: run.progress)
@@ -757,6 +797,7 @@ class AsyncSession:
         *,
         realtime: bool = False,
         destination: str | os.PathLike[str] | ObjectStore | None = None,
+        run_log: str | os.PathLike[str] | ObjectStore | None = None,
         output_types: Sequence[_OutputType] = (),
     ) -> AsyncRun:
         """Start a run, and return its jobs as they finish.
@@ -774,6 +815,11 @@ class AsyncSession:
             Any other string or path names a local folder, which oxy creates.
             Pass a store for explicit credentials or settings.
             A failed write stops submission and every later write.
+        run_log
+            The folder that oxy writes the run log to, as `<run start>.jsonl`, with one JSON line per payload in input order.
+            It takes the same types as `destination`.
+            oxy writes an empty file before the first submission, and replaces it when the run ends or stops.
+            So an empty file means the process was killed, and jobs may have billed without a record.
         output_types
             The output types of each result, sent as the API's `type` parameter.
             Empty returns the default type of each job.
@@ -783,7 +829,7 @@ class AsyncSession:
         ValueError
             If `realtime` or `destination` is set and a payload sets `storage_type`.
         obstore.exceptions.BaseError
-            If oxy cannot list `destination`.
+            If oxy cannot list `destination` or `run_log`, or cannot write the empty run log.
         """
         lines = [_Line(payload) for payload in _listed(payloads)]
         uploads = any("storage_type" in line.body for line in lines)
@@ -798,6 +844,14 @@ class AsyncSession:
             if destination is None
             else await anyio.to_thread.run_sync(_store, destination)
         )
+        log = None
+        if run_log is not None:
+            # Windows forbids colons in file names, so the start takes ISO 8601's basic form.
+            path = f"{datetime.now(UTC):%Y%m%dT%H%M%S.%f}"[:-3] + "Z.jsonl"
+            folder = await anyio.to_thread.run_sync(_store, run_log)
+            # An unwritable run log raises here, before any request bills.
+            await anyio.to_thread.run_sync(obstore.put, folder, path, b"")
+            log = _RunLog(folder, path, _shown(run_log, path))
         send, receive = anyio.create_memory_object_stream[Job](math.inf)
         self._streams.callback(receive.close)
         state = _RunState(
@@ -808,6 +862,7 @@ class AsyncSession:
             realtime=realtime,
             output_types=output_types,
             destination=store,
+            log=log,
         )
         self._tasks.start_soon(self._run, state)
         return AsyncRun(receive, state)
@@ -842,21 +897,25 @@ class AsyncSession:
             _counted(len(state.lines), "payload"),
             "Realtime" if state.realtime else "Push-Pull",
         )
-        try:
-            async with state.send, anyio.create_task_group() as reports:
-                if self._progress_interval is not None:
-                    reports.start_soon(self._report, state, self._progress_interval)
-                with state.running:
-                    async with anyio.create_task_group() as checks:
-                        with state.submitting:
-                            async with anyio.create_task_group() as submissions:
-                                await self._submit(state, checks, submissions)
-                reports.cancel_scope.cancel()
-                state.end()
-        finally:
-            # A stop by the caller skips `end`, and `progress` reads no clock once the loop closes.
-            if state.ended is None:
-                state.ended = anyio.current_time()
+        stopped = True
+        async with state.send:
+            try:
+                async with anyio.create_task_group() as reports:
+                    if self._progress_interval is not None:
+                        reports.start_soon(self._report, state, self._progress_interval)
+                    with state.running:
+                        async with anyio.create_task_group() as checks:
+                            with state.submitting:
+                                async with anyio.create_task_group() as submissions:
+                                    await self._submit(state, checks, submissions)
+                    reports.cancel_scope.cancel()
+                stopped = False
+            finally:
+                # A stop by the caller ends the run too, so the run log records the jobs it left pending.
+                with anyio.CancelScope(shield=True):
+                    halted = state.end(stopped=stopped)
+                    if state.log is not None:
+                        await state.save(state.log, halted)
 
     async def _report(self, state: _RunState, interval: float) -> None:
         while True:
@@ -1080,6 +1139,7 @@ class AsyncSession:
                 if error.status_code in _UNAUTHORIZED:
                     state.stop(error, state.running)
                     return
+                line.error = error
                 state.move(line, "unfetched")
                 _logger.warning(
                     "Stopped checking job %s, because %s: %s %s",
@@ -1309,6 +1369,7 @@ class Session:
         *,
         realtime: bool = False,
         destination: str | os.PathLike[str] | ObjectStore | None = None,
+        run_log: str | os.PathLike[str] | ObjectStore | None = None,
         output_types: Sequence[_OutputType] = (),
     ) -> Run:
         """Start a run, and return its jobs as they finish.
@@ -1321,6 +1382,7 @@ class Session:
                 payloads,
                 realtime=realtime,
                 destination=destination,
+                run_log=run_log,
                 output_types=output_types,
             )
         )
@@ -1412,6 +1474,15 @@ def _store(destination: str | os.PathLike[str] | ObjectStore) -> ObjectStore:
     return store
 
 
+def _shown(folder: str | os.PathLike[str] | ObjectStore, name: str) -> str:
+    """Return the path of the file `name` in `folder`, or `name` alone in a store the caller built."""
+    if isinstance(folder, str) and "://" in folder:
+        return posixpath.join(folder, name)
+    if isinstance(folder, str | os.PathLike):  # pyrefly: ignore[implicit-any-type-argument]
+        return str(Path(folder) / name)
+    return name
+
+
 def _listed(payloads: Payload | Iterable[Payload]) -> list[Payload]:
     return [payloads] if isinstance(payloads, Payload) else list(payloads)
 
@@ -1469,6 +1540,30 @@ def _reject(
     )
     state.move(line, "rejected")
     _logger.warning("Rejected %s %s: %s %s", *_named(line.body), status_code, message)
+
+
+def _record(line: _Line) -> dict[str, Any]:
+    """Return a payload's line of the run log."""
+    error = line.rejection or line.error
+    if isinstance(error, Rejection | OxylabsError):
+        reported = {
+            "status_code": error.status_code,
+            "message": error.message,
+            "trace_id": error.trace_id,
+        }
+    else:
+        reported = error and {
+            "status_code": None,
+            "message": f"{type(error).__name__}: {error}",
+            "trace_id": None,
+        }
+    return {
+        "state": line.state,
+        "id": line.job and line.job.id,
+        "payload": _redacted(line.body),
+        "error": reported,
+        "upload": None,
+    }
 
 
 def _error(response: httpx2.Response) -> OxylabsError:

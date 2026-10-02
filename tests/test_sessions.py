@@ -246,8 +246,9 @@ async def test_input_key_without_batches(fake: FakeOxylabs) -> None:
 
 @on_mock_clock
 @pytest.mark.parametrize(("limit", "render_limit"), [(50, 13), (100, 25)])
-async def test_pacing(limit: int, render_limit: int) -> None:
-    """A run of batches, single payloads, rendered payloads and pages gets no 429, on Starter's limits and on Business's."""
+@pytest.mark.parametrize("realtime", [False, True])
+async def test_pacing(limit: int, render_limit: int, realtime: bool) -> None:
+    """A run of batches, single payloads, rendered payloads and pages gets no 429, on Starter's limits and on Business's, through either integration method."""
     fake = FakeOxylabs(limit=limit, render_limit=render_limit)
     payloads = [
         *(universal(str(page)) for page in range(300)),
@@ -256,7 +257,7 @@ async def test_pacing(limit: int, render_limit: int) -> None:
         *(universal(str(page), pages=3) for page in range(30)),
     ]
     async with open_async_session(transport=fake) as session:
-        run = await session.execute(payloads)
+        run = await session.execute(payloads, realtime=realtime)
     assert (len(run.all()), run.progress.retries) == (len(payloads), 0)
 
 
@@ -445,6 +446,173 @@ async def test_upload() -> None:
         storage_url=f"gs://bucket/path/{job.id}.json",
         code=13000,
         message="Upload Successful",
+    )
+
+
+def unlinked(job: oxy.Job) -> oxy.Job:
+    """Return the job without its ID, the IDs in its results and its `_links`."""
+    results = [
+        dataclasses.replace(result, data=result.data | {"job_id": None})
+        for result in job.results
+    ]
+    data = {
+        key: value for key, value in job.data.items() if key not in {"id", "_links"}
+    }
+    return dataclasses.replace(job, id="", results=results, data=data)
+
+
+@on_mock_clock
+async def test_realtime_matches_push_pull(fake: FakeOxylabs) -> None:
+    """A Realtime run yields the same job as a Push-Pull run, apart from `_links`."""
+    payload = oxy.AmazonProduct(query="B000000001", parse=True)
+    async with open_async_session() as session:
+        realtime = (await session.execute(payload, realtime=True)).one()
+        push_pull = (await session.execute(payload)).one()
+    assert [request.url.host for request in fake.requests] == [
+        "realtime.oxylabs.io",
+        "data.oxylabs.io",
+        "data.oxylabs.io",
+    ]
+    assert realtime.id == fake.jobs[0]["id"]
+    assert "_links" not in realtime.data
+    assert unlinked(realtime) == unlinked(push_pull)
+
+
+def test_session_realtime(fake: FakeOxylabs) -> None:
+    """`Session.execute` takes `realtime=True`."""
+    with open_session() as session:
+        job = session.execute(universal(), realtime=True).one()
+    assert (job.status, fake.requests[0].url.host) == ("done", "realtime.oxylabs.io")
+
+
+@on_mock_clock
+async def test_realtime_job() -> None:
+    """A Realtime job finishes when its response returns, with `finished_at` from its results and a read timeout of 300 seconds."""
+    fake = FakeOxylabs(Outcome(after=12))
+    async with open_async_session(transport=fake) as session:
+        started = anyio.current_time()
+        job = (
+            await session.execute(universal(), realtime=True, output_types=["raw"])
+        ).one()
+        elapsed = anyio.current_time() - started
+    [request] = fake.requests
+    assert request.url.params["type"] == "raw"
+    assert request.extensions["timeout"]["read"] == 300
+    assert elapsed == 12
+    assert (job.created_at, job.finished_at) == (START, START + timedelta(seconds=12))
+    assert job.data["updated_at"] == job.data["created_at"]
+
+
+@on_mock_clock
+async def test_realtime_rejections(caplog: pytest.LogCaptureFixture) -> None:
+    """A 408, an LLM source's 422 and a 400 each reject their payload once, and the run carries on."""
+    caplog.set_level(logging.INFO, "oxyscraper")
+    fake = FakeOxylabs(
+        lambda payload: Outcome(after=150 if payload.get("url") == SLOW else 0)
+    )
+    slow = universal("slow")
+    llm = oxy.Payload(source="chatgpt", prompt="Name a color.")
+    ip = oxy.Payload(source="universal", url="https://10.0.0.1/")
+    async with open_async_session(transport=fake) as session:
+        error = await incomplete(
+            await session.stream([slow, llm, ip, universal()], realtime=True)
+        )
+    [job] = error.jobs
+    assert job.status == "done"
+    assert [
+        (rejection.payload, rejection.status_code, rejection.message)
+        for rejection in error.rejections
+    ] == [
+        (
+            slow,
+            408,
+            "Timed out. Realtime returns 408 for a job that runs 150 seconds or longer, so run this payload with Push-Pull",
+        ),
+        (
+            llm,
+            422,
+            "Realtime integration is not supported for LLM sources. Please use Push-Pull.",
+        ),
+        (ip, 400, "The hostname cannot be an ip address."),
+    ]
+    assert (submissions(fake), error.__cause__) == (4, None)
+    info = lines(caplog, logging.INFO)
+    assert (info[0], info[1], info[-1]) == (
+        "Running 4 payloads with Realtime",
+        "1/4 done, 2 rejected, 1 pending, 10.00s",
+        "Finished 4 payloads in 2m 40s: 1 done, 3 rejected",
+    )
+
+
+SLOW = f"{SANDBOX}/slow"
+
+
+async def test_realtime_storage_type(fake: FakeOxylabs) -> None:
+    """`realtime=True` with a payload that sets `storage_type` raises before any request."""
+    payloads = [universal(), universal(storage_type="gcs", storage_url="gs://bucket")]
+    async with open_async_session() as session:
+        with pytest.raises(ValueError, match="storage_type"):
+            await session.stream(payloads, realtime=True)
+    assert fake.requests == []
+
+
+@on_mock_clock
+async def test_realtime_payload_above_a_limit(fake: FakeOxylabs) -> None:
+    """A Realtime payload with `pages: 14` and `render` ends as a Rejection without a retry."""
+    large = universal(render="html", pages=14)
+    async with open_async_session() as session:
+        error = await incomplete(await session.stream(large, realtime=True))
+    [rejection] = error.rejections
+    assert (rejection.payload, rejection.status_code) == (large, 429)
+    assert "exceed the total-render-requests limit of 13" in rejection.message
+    assert submissions(fake) == 1
+
+
+@on_mock_clock
+async def test_realtime_retries(
+    fake: FakeOxylabs, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A Realtime submission retries a 503 under the same policy, with a WARNING line."""
+    fake.fail(503, on="submit")
+    payload = universal()
+    async with open_async_session() as session:
+        job = (await session.execute(payload, realtime=True)).one()
+    assert (job.status, submissions(fake)) == ("done", 2)
+    assert warnings(caplog) == [
+        f"Retrying a submission of universal {payload.url} after 503 Service Unavailable; the API may have created its job, and a duplicate bills"
+    ]
+
+
+@on_mock_clock
+async def test_realtime_slow_loop() -> None:
+    """At most 100 Realtime jobs wait for the caller's loop or for their response, and oxy submits no more until one leaves."""
+    fake = FakeOxylabs(limit=150)
+    payloads = [universal(str(page)) for page in range(150)]
+    async with open_async_session(transport=fake) as session:
+        run = await session.stream(payloads, realtime=True)
+        await anyio.sleep(30)
+        waiting = submissions(fake)
+        await anext(run)
+        await anyio.sleep(1)
+        assert (waiting, submissions(fake)) == (100, 101)
+
+
+@on_mock_clock
+async def test_realtime_stop(
+    fake: FakeOxylabs, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A 401 on one Realtime submission stops the run, and a submission that waits to retry stays unsubmitted."""
+    fake.fail(503, on="submit")
+    fake.fail(401, on="submit", times=None)
+    payloads = [universal("1"), universal("2")]
+    async with open_async_session() as session:
+        run = await session.stream(payloads, realtime=True)
+        error = await incomplete(run)
+    assert sorted(error.unsubmitted, key=repr) == sorted(payloads, key=repr)
+    assert (error.unfetched, cause(error).status_code) == ([], 401)
+    assert run.progress.unsubmitted == 2
+    assert warnings(caplog)[-1] == (
+        "Stopped submitting, because the API returned 401 Unauthorized; 2 payloads stay unsubmitted"
     )
 
 

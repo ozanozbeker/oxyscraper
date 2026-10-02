@@ -44,7 +44,7 @@ oxy.Session("USERNAME", password="PASSWORD")  # noqa: S106  # E: passed by name
 
 async def stream() -> None:
     async with oxy.AsyncSession(username="USERNAME", password="PASSWORD") as session:  # noqa: S106
-        run = await session.stream(payload)
+        run = await session.stream(payload, realtime=True)
         assert_type(run, oxy.AsyncRun)
         async for job in run:
             assert_type(job, oxy.Job)

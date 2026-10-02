@@ -30,6 +30,8 @@ runner = CliRunner(
     }
 )
 NO_CREDENTIALS = {"OXY_WSA_USERNAME": None, "OXY_WSA_PASSWORD": None}
+# Typer forces color when `GITHUB_ACTIONS` is set, so CI's stderr holds ANSI codes.
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class Terminal(io.StringIO):
@@ -42,6 +44,10 @@ class Terminal(io.StringIO):
 
 def reject(payload: dict[str, Any]) -> Rejected:
     return Rejected("Unsupported source.")
+
+
+def plain(text: str) -> str:
+    return ANSI.sub("", text)
 
 
 def lines(stdout: str) -> list[dict[str, Any]]:
@@ -302,7 +308,7 @@ def test_run_exits_2_before_any_request(
     """A mistake in an option, an input or a stdin line exits with code 2 and sends nothing."""
     result = runner.invoke(app, ["run", *args], input=stdin)
     assert result.exit_code == 2
-    assert message in result.stderr
+    assert message in plain(result.stderr)
     assert fake.requests == []
 
 
@@ -323,11 +329,15 @@ def test_run_errors_hold_no_credentials(args: list[str]) -> None:
 def test_line_errors_hold_no_credentials() -> None:
     """An error from a stdin line that is not JSON never prints the line."""
     line = '{"source": "universal", "storage_url": "gs://key:secret@bucket/path",}'
+    # Python 3.13 changed this error's message and column.
+    with pytest.raises(json.JSONDecodeError) as caught:
+        json.loads(line)
+    error = caught.value
     result = runner.invoke(app, ["run"], input=line)
     assert result.exit_code == 2
     assert (
-        "line 1 is not JSON: Expecting property name enclosed in double quotes at line 1 column 70"
-        in result.stderr
+        f"line 1 is not JSON: {error.msg} at line {error.lineno} column {error.colno}"
+        in plain(result.stderr)
     )
     assert "secret" not in result.output
 
@@ -339,7 +349,7 @@ def test_run_exits_2_with_storage_and_realtime(fake: FakeOxylabs) -> None:
         ["run", "universal", f"{SANDBOX}/1", "--storage-type", "gcs", "--realtime"],
     )
     assert result.exit_code == 2
-    assert "realtime=True" in result.stderr
+    assert "realtime=True" in plain(result.stderr)
     assert fake.requests == []
 
 
@@ -350,7 +360,7 @@ def test_missing_credentials(fake: FakeOxylabs, command: list[str]) -> None:
     """A missing credential exits with code 2 and sends nothing."""
     result = runner.invoke(app, command, env={"OXY_WSA_PASSWORD": None})
     assert result.exit_code == 2
-    assert "OXY_WSA_USERNAME and OXY_WSA_PASSWORD" in result.stderr
+    assert "OXY_WSA_USERNAME and OXY_WSA_PASSWORD" in plain(result.stderr)
     assert fake.requests == []
 
 
@@ -368,7 +378,7 @@ def test_stdin_on_a_terminal(
     with pytest.raises(SystemExit) as exited:
         main()
     assert exited.value.code == 2
-    assert "one per line of stdin" in capsys.readouterr().err
+    assert "one per line of stdin" in plain(capsys.readouterr().err)
 
 
 def test_run_with_empty_stdin(fake: FakeOxylabs) -> None:

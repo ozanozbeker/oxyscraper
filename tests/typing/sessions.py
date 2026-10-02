@@ -1,7 +1,10 @@
 """Code a caller writes against sessions, which `pyrefly check --expectations` checks."""
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal, assert_type
+
+from obstore.store import MemoryStore
 
 import oxyscraper as oxy
 
@@ -24,6 +27,8 @@ with oxy.Session(username="USERNAME", password="PASSWORD") as session:  # noqa: 
     assert_type(job.content, str | bytes | dict[str, Any] | list[Any])
     assert_type(job.results[0].type, Literal["raw", "parsed", "png", "markdown", "xhr"])
     session.execute(payload, output_types=["html"])  # E: output_types
+    session.execute(payload, destination=Path("results"))
+    session.execute(payload, destination=MemoryStore())
     try:
         session.execute(payload).all()
     except oxy.IncompleteRunError as error:

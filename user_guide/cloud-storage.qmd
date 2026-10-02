@@ -1,0 +1,113 @@
+---
+title: Cloud Storage
+---
+
+{{< include _includes/setup.qmd >}}
+
+```{python}
+#| include: false
+from oxyscraper.testing import Outcome
+
+
+def outcome(payload: dict[str, str]) -> Outcome:
+    if payload.get("storage_url", "").startswith("missing-bucket/"):
+        return Outcome(upload=13102)
+    return Outcome()
+
+
+fake = ExitStack().enter_context(FakeOxylabs(outcome))
+```
+
+Cloud Storage makes Oxylabs upload each job's result to your bucket, so the results never pass through your machine.
+Grant Oxylabs write access to the bucket first, as [Cloud Storage](https://developers.oxylabs.io/products/web-scraper-api/features/result-processing-and-storage/cloud-storage) describes.
+
+## Upload results
+
+Set `storage_type` and `storage_url` on each payload.
+A run then waits for each job's upload, and logs which payload it checks first:
+
+```{python}
+import logging
+import os
+
+import oxyscraper as oxy
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+logging.getLogger("httpx2").setLevel(logging.WARNING)
+
+USERNAME = os.environ["OXY_WSA_USERNAME"]
+PASSWORD = os.environ["OXY_WSA_PASSWORD"]
+
+payloads = [
+    oxy.Universal(
+        url=f"https://sandbox.oxylabs.io/products/{number}",
+        storage_type="gcs",
+        storage_url="my-bucket/products",
+    )
+    for number in range(1, 4)
+]
+
+with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+    for job in session.execute(payloads):
+        print(job.upload)
+```
+
+A `storage_url` that names a folder gets one object per job, named by the job's ID.
+One that ends in `.{{ extension }}` names each object, so it raises without `{{ job_id }}`, because jobs that share a name lose their uploads and still bill.
+
+`job.upload` holds the object's path, as the API resolved it, and the code of the upload's entry in the job's `statuses`.
+A run downloads nothing for such a job, so its `results` stay empty.
+So `destination` and `realtime=True` raise `ValueError` with a payload that sets `storage_type`, before any request.
+
+## Check the bucket first
+
+By default, oxy submits the first payload of each `storage_url` alone, and holds the rest until its upload succeeds.
+So a wrong bucket bills one job instead of the whole run:
+
+```{python}
+payloads = [
+    oxy.Universal(
+        url=f"https://sandbox.oxylabs.io/products/{number}",
+        storage_type="gcs",
+        storage_url="missing-bucket/products",
+    )
+    for number in range(1, 4)
+]
+
+with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+    run = session.execute(payloads)
+    try:
+        run.all()
+    except oxy.IncompleteRunError as error:
+        print(error)
+        print(error.unuploaded[0].upload)
+```
+
+`check_storage=False` submits every payload at once, and oxy still checks each upload.
+
+A failed upload leaves the job `done`, so oxy reads each job's upload code, and counts any code but 13000 as a failed upload.
+It reads the code, not the message, because the API's messages differ from its docs.
+A job with no entry by the pending limit counts as a failed upload too.
+A run never retries an upload, and lists each failed one in `IncompleteRunError.unuploaded`.
+
+Some sources return a job object without `statuses`, so oxy cannot see their uploads.
+Their `upload.code` is `None`, and oxy counts them neither as uploaded nor as unuploaded.
+
+## Storage types
+
+`gcs` is the only storage type with a live upload test.
+No test has uploaded to `s3`, `s3_compatible` or `tos`, so keep `check_storage` on for them.
+
+A `tos` or `s3_compatible` URL carries an access key and a secret.
+In `repr`, validation errors, log lines, the dry run and the run log, oxy replaces them with `redacted:redacted`, as the API does:
+
+```{python}
+oxy.Universal(
+    url="https://sandbox.oxylabs.io/products/1",
+    storage_type="s3_compatible",
+    storage_url="https://KEY_ID:SECRET@s3.example.com/my-bucket/products",
+)
+```
+
+The body that oxy sends keeps the secret.
+A payload that you rebuild from a run log does not, so set the secret again before you resubmit it.

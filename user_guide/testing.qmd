@@ -1,0 +1,175 @@
+---
+title: Testing with the fake
+---
+
+{{< include _includes/setup.qmd >}}
+
+`oxyscraper.testing.FakeOxylabs` is an httpx2 transport that returns the Web Scraper API's responses, so a test needs no credentials and bills nothing.
+It applies the API's free checks and rate limits, and keeps its jobs between sessions.
+Every example on this site runs against it when the site builds.
+
+The fake's behaviour is public API under SemVer, so an oxy upgrade never changes your tests' results without a changelog entry.
+
+## Switch it on for a suite
+
+`with FakeOxylabs():` points every session built inside the block at the fake, even one that another thread builds.
+So code that builds its own `Session`, such as a Dagster resource, runs against it, and an autouse fixture guards a whole suite:
+
+```{python}
+from collections.abc import Iterator
+
+import pytest
+
+from oxyscraper.testing import FakeOxylabs
+
+
+@pytest.fixture(autouse=True)
+def fake() -> Iterator[FakeOxylabs]:
+    with FakeOxylabs() as fake:
+        yield fake
+```
+
+Here is the code under test, which builds its own session:
+
+```{python}
+import oxyscraper as oxy
+
+
+def scrape(urls: list[str]) -> list[oxy.Job]:
+    with oxy.Session(username="USERNAME", password="PASSWORD") as session:
+        return session.execute([oxy.Universal(url=url) for url in urls]).all()
+```
+
+By default, every job finishes at once, with content that the fake writes from the job's input.
+`fake.jobs` holds each job object that the fake created, and `fake.requests` each request it received:
+
+```{python}
+def test_scrape_returns_each_job(fake: FakeOxylabs) -> None:
+    jobs = scrape(["https://sandbox.oxylabs.io/products/1"])
+    assert [job.status for job in jobs] == ["done"]
+    assert fake.jobs[0]["url"] == "https://sandbox.oxylabs.io/products/1"
+```
+
+```{python}
+#| include: false
+with FakeOxylabs() as fake:
+    test_scrape_returns_each_job(fake)
+```
+
+An explicit `transport=` on a session wins over the block, and the innermost open block wins over the outer ones.
+
+## Set what each job does
+
+An `Outcome` sets what Oxylabs does with a job: its final status, how many seconds it takes, its content, the target's status code and its upload.
+A function of the payload sets one outcome per job, and its `Rejected` rejects a payload instead.
+The function receives each payload as the API received it, once per batch value, because a test cannot predict how oxy groups payloads:
+
+```{python}
+from typing import Any
+
+from oxyscraper.testing import Outcome, Rejected
+
+
+def outcome(payload: dict[str, Any]) -> Outcome | Rejected:
+    if payload["url"].endswith("/2"):
+        return Outcome(status="faulted")
+    if payload["url"].endswith("/3"):
+        return Rejected("The hostname cannot be an ip address.")
+    return Outcome(content="<html><title>Product 1</title></html>")
+
+
+def test_scrape_keeps_faulted_jobs() -> None:
+    with FakeOxylabs(outcome), pytest.raises(oxy.IncompleteRunError) as caught:
+        scrape(
+            [f"https://sandbox.oxylabs.io/products/{number}" for number in (1, 2, 3)]
+        )
+    assert sorted(job.status for job in caught.value.jobs) == ["done", "faulted"]
+    assert len(caught.value.rejections) == 1
+```
+
+```{python}
+#| include: false
+test_scrape_keeps_faulted_jobs()
+```
+
+`content` takes a string, a parsed object, `bytes`, or a function of the page and the output type.
+The fake sends `bytes` as Base64, as the API sends `png` content, so a fixture comes back as the same bytes.
+
+## Fail requests
+
+`fake.fail` makes the next matching requests return a status, or raise an exception such as `httpx2.ReadTimeout("no answer")`.
+A failed request creates no job and counts against no limit:
+
+```{python}
+def test_scrape_retries_an_outage(fake: FakeOxylabs) -> None:
+    fake.fail(503, on="submit")
+    jobs = scrape(["https://sandbox.oxylabs.io/products/1"])
+    assert [job.status for job in jobs] == ["done"]
+```
+
+```{python}
+#| include: false
+with FakeOxylabs() as fake:
+    test_scrape_retries_an_outage(fake)
+```
+
+`on` limits the failure to submissions, status checks or results downloads, and `times=None` fails every request from then on.
+`message` sets the body's message, such as the domain throttle's `Access to example.com has been limited to 1 req/s`.
+
+`limit` and `render_limit` set the fake's rate limits, 50 and 13 by default.
+A submission that does not fit returns 429, as the API does.
+
+## Run slow jobs in no time
+
+The fake reads anyio's clock, so trio's `MockClock` runs a 10-minute pending limit in a fraction of a second.
+With the anyio pytest plugin, a fixture picks the clock:
+
+```{python}
+from trio.testing import MockClock
+
+
+@pytest.fixture
+def anyio_backend() -> object:
+    return "trio", {"clock": MockClock(autojump_threshold=0)}
+```
+
+```{python}
+import math
+
+
+@pytest.mark.anyio
+async def test_a_stuck_job_ends_unfetched() -> None:
+    payload = oxy.Universal(url="https://sandbox.oxylabs.io/products/1")
+    with FakeOxylabs(Outcome(after=math.inf)):
+        async with oxy.AsyncSession(
+            username="USERNAME", password="PASSWORD"
+        ) as session:
+            run = await session.stream(payload)
+            with pytest.raises(oxy.IncompleteRunError) as caught:
+                await run.all()
+    assert len(caught.value.unfetched) == 1
+```
+
+```{python}
+#| include: false
+import trio
+
+trio.run(test_a_stuck_job_ends_unfetched, clock=MockClock(autojump_threshold=0))
+```
+
+## Test `get`
+
+The fake keeps its jobs after a session closes, so a second session fetches what a first one submitted:
+
+```{python}
+def test_get_fetches_an_earlier_job(fake: FakeOxylabs) -> None:
+    [job] = scrape(["https://sandbox.oxylabs.io/products/1"])
+    with oxy.Session(username="USERNAME", password="PASSWORD") as session:
+        assert session.get(job.id).status == "done"
+```
+
+```{python}
+#| include: false
+with FakeOxylabs() as fake:
+    test_get_fetches_an_earlier_job(fake)
+```

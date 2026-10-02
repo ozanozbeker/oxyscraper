@@ -1,0 +1,181 @@
+---
+title: The command line
+---
+
+{{< include _includes/setup.qmd >}}
+
+```{python}
+#| include: false
+import json
+import re
+import shlex
+import subprocess
+from pathlib import Path
+
+from rich.console import Console
+from typer.testing import CliRunner
+
+from oxyscraper import _cli
+from oxyscraper.testing import Outcome
+
+# rich renders to the notebook under Jupyter, so the CLI prints to a plain stderr console instead.
+_cli._console = Console(stderr=True, force_jupyter=False, force_terminal=False)
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def shell(command: str, code: int = 0) -> None:
+    """Show a shell line and its output, running its last command, `oxy`, in this process, where the fake is."""
+    before, pipe, args = command.rpartition("| oxy ")
+    if not pipe:
+        args = command.removeprefix("oxy ")
+    args, _, output = args.partition(" > ")
+    args, _, source = args.partition(" < ")
+    stdin = None
+    if source:
+        stdin = Path(source).read_text()
+    elif before:
+        stdin = subprocess.run(before, shell=True, capture_output=True, text=True, check=True).stdout
+    result = CliRunner().invoke(_cli.app, shlex.split(args), input=stdin, prog_name="oxy")
+    assert result.exit_code == code, (result.exit_code, result.output)
+    if output:
+        Path(output).write_text(result.stdout)
+    shown = ANSI.sub("", result.stderr + ("" if output else result.stdout)).rstrip()
+    print(f"```sh\n{command}\n```\n")
+    if shown:
+        print(f"```text\n{shown}\n```\n")
+
+
+# The URLs whose next job faults.
+faulting: set[str] = set()
+
+
+def outcome(payload: dict[str, str]) -> Outcome:
+    if payload.get("url") in faulting:
+        faulting.remove(payload["url"])
+        return Outcome(status="faulted")
+    return Outcome()
+
+
+fake = ExitStack().enter_context(FakeOxylabs(outcome))
+Path("urls.txt").write_text(
+    "".join(f"https://sandbox.oxylabs.io/products/{number}\n" for number in range(1, 5))
+)
+```
+
+The `oxy` command runs jobs from a shell, through the same `Session` that the library uses.
+
+## Install
+
+```sh
+uv tool install 'oxyscraper[cli]'
+```
+
+This installs two commands, `oxy` and `oxyscraper`, which do the same thing.
+`uv add oxyscraper` installs the library alone, and its commands then print the install command above.
+
+`oxy` reads the credentials of a Web Scraper API user from `OXY_WSA_USERNAME` and `OXY_WSA_PASSWORD`.
+No option takes the password, so it never lands in your shell history, and `oxy` loads no `.env` file.
+
+## Run jobs
+
+`oxy run SOURCE INPUT...` runs one job per input, and prints each done job to stdout as one line of JSON, the body that the API returned.
+So a redirect writes a file that `pl.read_ndjson` reads:
+
+```{python}
+#| echo: false
+#| output: asis
+shell("oxy run universal https://sandbox.oxylabs.io/products/1 https://sandbox.oxylabs.io/products/2 > results.ndjson")
+```
+
+An input with `://` goes in `url`, and any other input in `query`, so most sources need no flag.
+`-k` names another input key, such as `-k product_id`.
+
+Each parameter that `oxy.Payload` types has its own option, which `oxy run --help` lists with its allowed values.
+`-p KEY=VALUE` sets any other parameter as a string, and `-p KEY:=JSON` sets a JSON value.
+`--dry-run` prints each payload and the most results they can bill, and sends nothing:
+
+```{python}
+#| echo: false
+#| output: asis
+shell("oxy run amazon_search 'standing desk' 'desk lamp' --domain de --pages 2 -p sort_by=price_low_to_high --dry-run")
+```
+
+`oxy` builds each payload with its source's model when one exists, so a misspelt key or value exits with code 2 before any request:
+
+```{python}
+#| echo: false
+#| output: asis
+shell("oxy run amazon_product B07FZ8S74R -p domian=de", code=2)
+```
+
+## Read stdin
+
+Without inputs, `oxy run SOURCE` reads one input per line of stdin.
+Without a source, it reads one payload per line, as JSON in the API's shape, so a dry run's output feeds a later run:
+
+```{python}
+#| echo: false
+#| output: asis
+shell("oxy run universal --dry-run < urls.txt > payloads.ndjson")
+shell("oxy run -d results < payloads.ndjson")
+```
+
+`-d` writes each done job to `<job_id>.json` in a folder or a bucket instead of stdout, as `destination` does in [Destinations and run logs](destinations.qmd).
+A URL such as `gs://bucket/path` names a bucket.
+
+## Recover a run
+
+`--run-log DIR` writes a run log, one line per payload with its state, job ID and payload:
+
+```{python}
+#| echo: false
+#| output: asis
+faulting.add("https://sandbox.oxylabs.io/products/3")
+# The first check fails, so its job ends unfetched.
+fake.fail(404, on="results")
+shell("oxy run universal -d results --run-log logs < urls.txt", code=1)
+log = next(Path("logs").glob("*.jsonl"))
+states = sorted(json.loads(line)["state"] for line in log.read_text().splitlines())
+assert states == ["done", "done", "faulted", "unfetched"], states
+```
+
+The run exits with code 1, because a job faulted and oxy stopped checking another.
+`jq` reads the run log, so two commands recover the run without paying twice.
+The first resubmits the faulted payloads:
+
+```{python}
+#| echo: false
+#| output: asis
+shell(f"jq -c 'select(.state == \"faulted\") | .payload' {log} | oxy run -d results")
+```
+
+The second fetches the unfetched jobs, which may have finished since:
+
+```{python}
+#| echo: false
+#| output: asis
+shell(f"jq -r 'select(.state == \"unfetched\") | .id' {log} | oxy get -d results")
+```
+
+`oxy get JOB_ID...` takes IDs as arguments or one per line of stdin.
+For a job that is still pending, faulted or whose results expired, it writes a warning and exits with code 1.
+
+The run log redacts the credentials in a `storage_url`.
+So a `tos` or `s3_compatible` payload needs its secret again before a resubmission.
+
+## Output
+
+stdout holds JSON only, and stderr holds every message, in uv's style.
+A warning starts with `warning:`, a hint with `hint:` and an error with `error:`.
+On a terminal, a live line shows the run's progress, and elsewhere a plain progress line prints every 10 seconds.
+`-v` adds a debug line for each change of state and each retry.
+
+The exit code tells the outcome:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Every job is done. |
+| 1 | A job faulted, or the run was incomplete. |
+| 2 | An option, an input or a payload was invalid, or a credential is missing. |
+| 130 | Ctrl+C stopped the run. |
+| 143 | SIGTERM stopped the run, which `oxy` handles as Ctrl+C, so the run log is still written. |

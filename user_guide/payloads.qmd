@@ -1,0 +1,131 @@
+---
+title: Payloads
+---
+
+{{< include _includes/setup.qmd >}}
+
+A payload holds the parameters of one job.
+A session sends it as the body of a submission, and the API creates one job from it.
+
+## Install
+
+```sh
+uv add oxyscraper
+```
+
+The library installs no CLI packages.
+[The command line](cli.qmd) shows how to install the `oxy` command.
+
+## Build a payload
+
+Each source that a billed run has checked has its own model, and `oxy.SOURCES` lists them:
+
+```{python}
+import oxyscraper as oxy
+
+[model.__name__ for model in oxy.SOURCES]
+```
+
+A model fixes `source` and types each parameter that its source takes.
+Each allowed value is a `Literal`, so an editor lists the values and a type checker flags a misspelt one.
+`model_dump()` returns the body that oxy sends:
+
+```{python}
+payload = oxy.AmazonSearch(
+    query="standing desk", domain="de", sort_by="price_low_to_high", pages=2
+)
+payload.model_dump()
+```
+
+The API reads `sort_by` from the `context` list, so the model moves it there.
+You pass every parameter as a plain keyword, and never build `context` by hand.
+
+An unset field stays out of the body, so the API applies its own default.
+A job's `data` then records the value the API chose.
+
+## Sources without a model
+
+`oxy.Payload` takes any source and any parameter.
+Each keyword that it does not type goes into the body as it is:
+
+```{python}
+oxy.Payload(source="walmart_product", product_id="436012154").model_dump()
+```
+
+`Payload` types the parameters that keep one name, type and value set on every source that takes them, such as `render`, `parse`, `pages` and `storage_url`.
+`geo_location`, `locale` and `domain` stay `str`, because their values vary by source.
+
+Every payload sets exactly one input key, such as `query`, `url` or `product_id`, to a non-empty string.
+
+## Mistakes that bill
+
+A model raises for each mistake that a live run showed billing.
+A misspelt keyword is the most common, because the API bills a job that ignores it:
+
+```{python}
+import pydantic
+
+try:
+    oxy.AmazonProduct(query="B07FZ8S74R", domian="de")
+except pydantic.ValidationError as error:
+    print(error)
+```
+
+An ASIN longer than 10 characters raises too, because the API bills a 404 page for it.
+
+A model leaves each mistake that the API rejects for free to the API.
+The run reports such a payload as a rejection, which [Failures](failures.qmd) describes.
+Each model's reference page lists its source's rules and caveats, such as which `geo_location` values may bill on [`AmazonSearch`](../reference/AmazonSearch.qmd).
+
+## Parameters that oxy does not type
+
+`extra` passes keys in the API's own shape.
+The model merges them into the body, and appends their `context` items after the typed ones.
+`extra` also carries a value that oxy's `Literal` does not list yet, such as a new `sort_by` order:
+
+```{python}
+oxy.AmazonSearch(
+    query="standing desk",
+    extra={"context": [{"key": "sort_by", "value": "newest_arrivals"}]},
+).model_dump()
+```
+
+A key set both as a field and in `extra` raises.
+
+## Instructions
+
+`parsing_instructions` and `browser_instructions` are typed too:
+
+```{python}
+oxy.Universal(
+    url="https://sandbox.oxylabs.io/products",
+    render="html",
+    parse=True,
+    browser_instructions=[
+        {"type": "scroll_to_bottom"},
+        {"type": "wait", "wait_time_s": 2},
+    ],
+    parsing_instructions={
+        "titles": {"_fns": [{"_fn": "xpath", "_args": ["//h4/text()"]}]},
+    },
+)
+```
+
+A wrong `_args` shape raises, because the API bills the job and returns a null field.
+An instruction after `fetch_resource` raises, because the API returns 500 for it on every attempt.
+
+## Check a run's size
+
+`oxy.dry_run` lists the body of each job and the most results the jobs can bill.
+It sends no request and needs no credentials:
+
+```{python}
+report = oxy.dry_run(
+    [oxy.AmazonSearch(query=query, pages=3) for query in ["standing desk", "desk lamp"]]
+)
+print(report.job_count, report.max_results)
+```
+
+`max_results` is an upper bound.
+A rejected or faulted job bills nothing, and a source that ignores `pages` bills one result.
+The dry run never reads the account's remaining results, so compare `max_results` with your own limit.

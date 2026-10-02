@@ -55,7 +55,7 @@ dev = [
   "trio>=0.34.0",
 ]
 # Not in `dev`, so the test and lint jobs skip Quarto's Jupyter stack.
-docs = ["great-docs>=0.17"]
+docs = ["great-docs>=0.17", "polars>=1.44.2"]
 
 [build-system]
 requires = ["uv_build>=0.12.18,<0.13.0"]

@@ -1,0 +1,170 @@
+---
+title: Sessions and runs
+---
+
+{{< include _includes/setup.qmd >}}
+
+A session submits payloads and checks their jobs in the background, for as long as its `with` block runs.
+Each `execute` call starts one run.
+
+## Run payloads
+
+`Session` takes the credentials of a Web Scraper API user as arguments.
+The library reads no environment variable and no `.env` file, so your code chooses where the credentials come from:
+
+```{python}
+import os
+
+import oxyscraper as oxy
+
+USERNAME = os.environ["OXY_WSA_USERNAME"]
+PASSWORD = os.environ["OXY_WSA_PASSWORD"]
+
+payloads = [
+    oxy.Universal(url=f"https://sandbox.oxylabs.io/products/{number}")
+    for number in range(1, 4)
+]
+
+with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+    run = session.execute(payloads)
+    for job in run:
+        print(job.id, job.status, job.input)
+```
+
+An empty username or password raises `ValueError` before any request.
+
+`execute` starts submitting at once and returns a `Run`.
+The run yields each job as it finishes, so the loop body handles early jobs while oxy submits and checks later ones.
+Leaving the `with` block stops every run that has not finished.
+
+A run also has three methods, and each returns only the jobs that the run has not yet yielded:
+
+- `all()` waits for every job and returns them in a list.
+- `one()` returns the run's only job, and raises unless the run holds exactly one.
+- `partitions(size)` yields lists of `size` jobs as they finish, for a bulk write.
+
+## Jobs
+
+```{python}
+with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+    job = session.execute(
+        oxy.Universal(url="https://sandbox.oxylabs.io/products/1")
+    ).one()
+
+job
+```
+
+`job.content` returns the content of the job's only result, and raises if the job has more or fewer than one.
+`job.results` lists one `Result` per page and output type, with `png` content decoded to bytes.
+`job.data` holds the job object as the API returned it, so a field that oxy does not type stays readable.
+
+`output_types` asks for several output types at once, so one fetch returns both raw and parsed content:
+
+```{python}
+with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+    run = session.execute(
+        oxy.AmazonProduct(query="B07FZ8S74R", parse=True),
+        output_types=["raw", "parsed"],
+    )
+    job = run.one()
+
+[(result.type, type(result.content).__name__) for result in job.results]
+```
+
+## Progress
+
+`run.progress` returns a frozen `Progress`, which counts the run's payloads in each state.
+After the last job it stops changing, so it is also the run's summary:
+
+```{python}
+print(run.progress)
+```
+
+The six states, `unsubmitted`, `pending`, `done`, `faulted`, `rejected` and `unfetched`, sum to `payloads`.
+`retries` counts every request that oxy sent again, so it rises during an outage.
+Each field is an `int` or a `timedelta`, so you can record them as asset metadata.
+
+## Realtime
+
+A run uses Push-Pull unless you pass `realtime=True`.
+A session never switches the integration method, and both methods yield the same `Job`:
+
+```{python}
+with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+    run = session.execute(
+        oxy.Universal(url="https://sandbox.oxylabs.io/products/1"), realtime=True
+    )
+    print(run.one().status)
+```
+
+Realtime returns 408 for a job that runs 150 seconds or longer, and oxy reports that payload as a rejection that points to Push-Pull.
+
+## Fetch a job by ID
+
+`get` returns a job as it stands, at once:
+
+```{python}
+with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+    fetched = session.get(job.id)
+
+fetched.status, fetched.payload
+```
+
+A pending job comes back with `status="pending"` and no results.
+So does a finished job whose results expired, but with its final status.
+`payload` is `None` for a job from `get`.
+The API returns 404 for the ID of a Realtime job, so `get` fetches Push-Pull jobs only.
+
+## Async code
+
+`AsyncSession` takes the same arguments, and runs on asyncio and trio.
+`stream` returns an `AsyncRun`, which yields each job as it finishes:
+
+```{python}
+async def scrape() -> list[str]:
+    async with oxy.AsyncSession(username=USERNAME, password=PASSWORD) as session:
+        run = await session.stream(payloads)
+        return [job.id async for job in run]
+
+
+await scrape()
+```
+
+A notebook awaits it at the top level, as above, and a script calls `asyncio.run(scrape())`.
+`AsyncSession.execute` awaits every job and returns a `Run`.
+
+## Scheduling
+
+A run needs no setting for its pace:
+
+- It sends payloads that share every parameter except the input as one batch, so 8,600 payloads take about 172 submissions.
+- It paces submissions from the rate-limit headers of each response, so a run stays under the plan's limit.
+- It checks each job 1 second after the API accepts it, then every second until the job is 10 seconds old, then every 5 seconds.
+- It stops checking a job that is still pending after `pending_limit` seconds, 600 by default, and reports it as unfetched.
+- It holds at most 100 finished jobs for your loop, and pauses while they wait, so a slow loop keeps memory bounded.
+
+Two runs on one session share its rate-limit budgets and its limit of 100 requests at once.
+Processes share no limit.
+Each process slows down as the headers show the account's remaining requests drop, and retries each 429.
+To run one run at a time across processes, limit concurrency outside oxy, such as with a Dagster pool.
+Oxylabs has not said whether API users under one account share one limit, so a second API user may add no throughput.
+
+## Logging
+
+The library writes to the `oxyscraper` logger and attaches no handler, so your logging config sets where its lines go.
+WARNING covers each event that loses a result or may cost money.
+INFO covers the start of a run, a progress line every `progress_interval` seconds, the end line and the run log's path.
+The library writes no ERROR line, because it raises instead.
+
+httpx2 logs each request at INFO, and a run that checks 8,600 jobs writes thousands of those lines.
+Set the `httpx2` logger to WARNING:
+
+```{python}
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+logging.getLogger("httpx2").setLevel(logging.WARNING)
+
+with oxy.Session(username=USERNAME, password=PASSWORD) as session:
+    session.execute(payloads).all()
+```

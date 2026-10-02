@@ -6,6 +6,7 @@ Each entry cites the page as published on 2026-09-25, or on 2026-09-28 for the p
 The two entries on storage endpoints, the entry on a 400's `errors` list, the entries from the `universal` and Amazon runs and the entry on LLM sources through Realtime cite the pages as published on 2026-09-29.
 The entries on `pages` limits, on a job larger than a rate limit and from the job object run cite the pages as published on 2026-09-30.
 The entries from the input check run and the entry on secrets in `storage_url` cite the pages as published on 2026-10-01.
+The entry on `start_page` cites the pages as the catalog read them on 2026-09-24.
 
 ## Statements the API contradicts
 
@@ -392,6 +393,13 @@ The entries from the input check run and the entry on secrets in `storage_url` c
   A userinfo without `:`, or none, returned ``Parameter `storage_url` must contain a valid user info.``
 - **Evidence:** [Secrets that are not URL-safe](docs/research/cloud-storage.md#secrets-that-are-not-url-safe).
 
+### Cloud Storage: a job object of the payload alone has no `statuses`
+
+- **Docs:** [Response Codes][response-codes] places upload codes in the job's `statuses`, and does not say that some job objects have none.
+- **API:** a `walmart_product` job uploaded its object, and its job object had no `statuses` key for 300 seconds after.
+  The 100 sources that return the payload alone show no upload's outcome.
+- **Evidence:** [Probes on 2026-10-02](docs/research/cloud-storage.md#probes-on-2026-10-02).
+
 ### Push-Pull: 97 of the 123 sources take no batch
 
 - **Docs:** [Push-Pull][push-pull] documents the batch endpoint without limiting it to any source.
@@ -404,8 +412,9 @@ The entries from the input check run and the entry on secrets in `storage_url` c
 - **Docs:** no page says what the API does with a parameter it does not know.
 - **API:** on `universal` and `amazon_search`, an unknown top-level key, an unknown `context` key, and a key that belongs to another source all returned 202.
   The job object left them out, and the job ran and billed.
+  A source that takes a batch but not `url` returned ``Source `<source>` is not available with url parameter.`` for `url`.
   The 97 sources without batches returned 400 for an unknown key instead, with `[foo_bar]: This field was not expected.`
-- **Evidence:** [Unknown keys](docs/research/live-parameters.md#unknown-keys), [Probes on 2026-09-29](docs/research/live-parameters.md#probes-on-2026-09-29) and [Keys by source](docs/research/live-parameters.md#keys-by-source).
+- **Evidence:** [Unknown keys](docs/research/live-parameters.md#unknown-keys), [Probes on 2026-09-29](docs/research/live-parameters.md#probes-on-2026-09-29), [Keys by source](docs/research/live-parameters.md#keys-by-source) and [Input keys of the sources that take a batch](docs/research/live-parameters.md#input-keys-of-the-sources-that-take-a-batch).
 
 ### Response Codes: a 400 can list its errors under `errors`, with no `message`
 
@@ -437,14 +446,15 @@ The entries from the input check run and the entry on secrets in `storage_url` c
   A well-formed postal code that does not exist, `99999`, faulted the job after 120 seconds.
 - **Evidence:** [Amazon location](docs/research/live-parameters.md#amazon-location).
 
-### Amazon Best Sellers: an empty or unknown `query` bills a rendered page
+### Amazon Best Sellers: an empty, unknown or missing `query` bills a rendered page
 
 - **Docs:** [Best Sellers][amz-bestsellers] marks `query`, a browse node ID, as required, and does not say what an empty or unknown one does.
 - **API:** a batch with two empty `query` values created two jobs.
   A single submission with `query: ""` and one with `query: "abc"` created a job each.
   Every such job fetched a page titled "Amazon Best Sellers: Best undefined", ended `done` and billed as a rendered result.
+  A submission without `query` created a job that fetched the top Best Sellers page and billed.
   Every other source that takes a batch failed an empty value on its own.
-- **Evidence:** [Sources that take a batch](docs/research/live-parameters.md#sources-that-take-a-batch) and [Input and page rules](docs/research/live-amazon.md#input-and-page-rules).
+- **Evidence:** [Sources that take a batch](docs/research/live-parameters.md#sources-that-take-a-batch), [Input and page rules](docs/research/live-amazon.md#input-and-page-rules) and [Input keys of the sources that take a batch](docs/research/live-parameters.md#input-keys-of-the-sources-that-take-a-batch).
 
 ### Any Domain: `universal` takes `context` keys that no page names
 
@@ -670,6 +680,14 @@ The entries from the input check run and the entry on secrets in `storage_url` c
 - **API:** `target_product` returned 400 with `[product_id]: Must be 8 or 10 digits.` for any other `product_id`.
   `target_category` returned 400 with `[category_id]: Must be 5+ characters.` for a shorter `category_id`.
 - **Evidence:** [Input checks](docs/research/live-parameters.md#input-checks).
+
+### Start page: `amazon_search` takes digits as text, and `walmart_search` takes 0
+
+- **Docs:** the source pages give `start_page` as an integer with default 1, and no range.
+- **API:** `amazon_search`, `chatgpt`, `google_search` and `universal` returned ``Parameter `start_page` should be a positive integer.`` for 0.
+  `amazon_search` took `"2"` as 2, and returned ``Invalid type for parameter `start_page`, supported types: `integer, string`.`` for `"two"` or `2.5`.
+  `walmart_search` returned `[start_page]: This value should be of type int.` for any string, and took 0, which faulted the job.
+- **Evidence:** [`start_page`](docs/research/live-parameters.md#start_page).
 
 [response-codes]: https://developers.oxylabs.io/products/web-scraper-api/response-codes
 [help-response-codes]: https://developers.oxylabs.io/help-center/troubleshooting/response-codes-for-web-scraper-api

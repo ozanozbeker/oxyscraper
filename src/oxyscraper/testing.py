@@ -57,6 +57,8 @@ _BATCH_KEYS = ("query", "url", "prompt")
 _URL_SOURCES = frozenset({"amazon", "bing", "google", "universal"})
 _MAX_PAGES = 20
 _PAGE_LIMITS = {"google_ads": 10, "google_search": 10}
+# These sources fetch one page and read `pages: 1` (docs/research/live-api.md#a-job-larger-than-the-limit, live-amazon.md#top-level-parameters).
+_ONE_PAGE = frozenset({"amazon", "amazon_product", "amazon_sellers", "universal"})
 _LLM_SOURCES = frozenset({"chatgpt", "gemini", "perplexity"})
 _LIMIT_MESSAGES: dict[_Limit, str] = {
     "total-requests": "Too many requests. (Total Dynamic).",
@@ -422,6 +424,8 @@ _FORMATS = {
         "Must be 19 digits for product_id.",
     ),
 }
+_ASIN = re.compile(r"[A-Z0-9]+")
+_ASIN_LENGTH = 10
 # Of the 97, these return results without the target's request and response.
 _BARE_RESULTS = frozenset({"youtube_channel", "youtube_search", "youtube_search_max"})
 # A 1x1 PNG, so an image library opens the default `png` content.
@@ -468,6 +472,7 @@ class Outcome:
     upload
         The code of the Cloud Storage entry in `statuses`, for a job with `storage_url`.
         `None` writes no entry.
+        The API's job object of the payload alone has no `statuses`, so the fake's has none either.
     upload_after
         Seconds from the final status to the entry.
     expires_after
@@ -635,12 +640,15 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
 
     def __exit__(self, *exc_info: object) -> None:
         """Stop pointing new sessions at this fake."""
-        _fakes.remove(self)
+        # The fake's innermost block ends first, so its last entry goes, not its first.
+        del _fakes[len(_fakes) - 1 - _fakes[::-1].index(self)]
 
     @override
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
         await request.aread()
         self.requests.append(request)
+        # Start the clock here, because a failure or a 404 below never reads it.
+        self._now()
         path = request.url.path
         endpoint: _Endpoint | None = None
         job_id: str | None = None
@@ -876,7 +884,7 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
                 obj["storage_url"] = job.storage_url
         if not job.realtime:
             base = f"http://data.oxylabs.io/v1/queries/{job.id}"
-            first = obj.get("start_page", 1)
+            first = _first_page(payload)
             pages = [
                 f"{base}/results/{page}/content"
                 for page in range(first, first + obj.get("pages", 1))
@@ -909,11 +917,7 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
         # Only Amazon and `youtube_metadata` showed this key for `parse: true`, so the fake extends it to all 23 sources.
         if payload.get("parse") is True:
             context = context | {"successful_parse_status_codes": []}
-        sent = {
-            item["key"]: item.get("value")
-            for item in payload.get("context", [])
-            if isinstance(item, dict) and "key" in item
-        }
+        sent = _sent_context(payload)
         obj: dict[str, Any] = {
             "callback_url": None,
             "client_id": int(_CLIENT_ID),
@@ -939,7 +943,8 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
             "xhr": False,
             "markdown": False,
             "url": None,
-            "query": "",
+            # A source that takes `query` reads `null` without one.
+            "query": "" if payload["source"] in _URL_SOURCES else None,
             "source": payload["source"],
             "start_page": 1,
             "status": status,
@@ -961,6 +966,7 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
             if key in obj and key not in _SERVER_KEYS
         }
         obj |= {key: payload[key] for key in _INPUT_KEYS if key in payload}
+        obj |= {"pages": _fetched(payload), "start_page": _first_page(payload)}
         code = job.outcome.upload
         uploaded = job.finished + job.outcome.upload_after
         if (
@@ -977,14 +983,14 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
 
     def _results(self, job: _Job, types: str | None) -> list[dict[str, Any]]:
         payload, outcome = job.payload, job.outcome
-        first = payload.get("start_page", 1)
+        first = _first_page(payload)
         if outcome.status == "faulted":
             return [self._entry(job, first, "raw", 613, "")]
         requested: list[str] = types.split(",") if types else []
         kinds = [kind for name in requested for kind in _OUTPUT_TYPES if kind == name]
         return [
             self._entry(job, page, kind, outcome.status_code, _content(job, page, kind))
-            for page in range(first, first + _pages(payload))
+            for page in range(first, first + _fetched(payload))
             for kind in kinds or [_default_type(payload)]
         ]
 
@@ -1122,14 +1128,58 @@ def _check(payload: dict[str, Any]) -> Rejected | None:
         return Rejected("Unsupported source.")
     if source in _TAKES:
         return _field_check(source, payload)
-    if rejected := _pages_error(source, payload.get("pages", 1)):
-        return rejected
-    keys = ("prompt", "query") if source in _LLM_SOURCES else _INPUT_KEYS
-    if not any(payload.get(key) for key in keys):
-        if source in _URL_SOURCES:
-            return Rejected("Parameter `url` is empty.")
-        return Rejected("Query parameter is empty.")
-    return _url_error(payload.get("url"))
+    return (
+        _pages_error(source, payload.get("pages", 1))
+        or _start_page_error(payload.get("start_page"))
+        or _input_error(source, payload)
+        or _source_error(source, payload)
+    )
+
+
+def _input_error(source: str, payload: dict[str, Any]) -> Rejected | None:
+    """Return the free 400 for the input of a source that takes a batch."""
+    # Any other input key is unknown to these sources, so the API leaves it out, except `url`.
+    if source in _URL_SOURCES:
+        url = payload.get("url")
+        return _url_error(url) if url else Rejected("Parameter `url` is empty.")
+    if "url" in payload:
+        return Rejected(f"Source `{source}` is not available with url parameter.")
+    if source == "amazon_search":
+        if payload.get("query") or _sent_context(payload).get("merchant_id"):
+            return None
+        message = "Either `query` or `context:merchant_id` parameters must be set."
+        return Rejected(message)
+    # `amazon_bestsellers` bills a page for an empty, unknown or missing `query`.
+    if (
+        source == "amazon_bestsellers"
+        or payload.get("query")
+        or (source in _LLM_SOURCES and payload.get("prompt"))
+    ):
+        return None
+    return Rejected("Query parameter is empty.")
+
+
+def _source_error(source: str, payload: dict[str, Any]) -> Rejected | None:
+    """Return the free 400 for a value that one source requires."""
+    asin = str(payload.get("query"))
+    parsers = {"parser_type", "parser_preset", "parsing_instructions"}
+    match source:
+        case "google_ai_mode" if payload.get("render") not in {"html", "png"}:
+            message = "Parameter `render` for this source can only be set to one of: html, png."
+        case "youtube_download" if "storage_url" not in payload:
+            message = "Parameter `storage_url` must be provided for this source."
+        case "youtube_metadata" if payload.get("parse") is not True:
+            message = "Parameter `parse` must be enabled for this source."
+        # The fake has no dedicated parser, so it rejects `parse` for every page.
+        case "universal" if payload.get("parse") is True and not parsers & set(payload):
+            message = f"Parsing `{payload['url']}` url is allowed only with `parser_type` or `parsing_instructions` parameter."
+        case "amazon_pricing" | "amazon_product" if len(asin) < _ASIN_LENGTH:
+            message = "ASIN length is not valid."
+        case "amazon_pricing" | "amazon_product" if not _ASIN.fullmatch(asin):
+            message = "ASIN should only contain alphanumeric values."
+        case _:
+            return None
+    return Rejected(message)
 
 
 def _field_check(source: str, payload: dict[str, Any]) -> Rejected | None:
@@ -1153,6 +1203,14 @@ def _field_errors(source: str, payload: dict[str, Any]) -> list[str]:
     ]
     if source in _REQUIRED_DOMAIN and "domain" not in payload:
         errors.append("[domain]: This field is missing.")
+    # These sources take any int, 0 included, and no text.
+    start_page = payload.get("start_page")
+    if (
+        "start_page" in takes
+        and "start_page" in payload
+        and type(start_page) is not int
+    ):
+        errors.append("[start_page]: This value should be of type int.")
     value = payload.get(key)
     if key not in payload and source not in _OPTIONAL_INPUT:
         errors.append(f"[{key}]: This field is missing.")
@@ -1210,9 +1268,23 @@ def _pages_error(source: str, pages: object) -> Rejected | None:
     return None
 
 
-def _url_error(url: object, *, hosts: bool = True) -> Rejected | None:
-    if url is None:
+def _start_page_error(start_page: object) -> Rejected | None:
+    """Return the free 400 for a `start_page` on a source that takes a batch, which also takes digits as text."""
+    if start_page is None:
         return None
+    try:
+        first = int(start_page) if isinstance(start_page, int | str) else None
+    except ValueError:
+        first = None
+    if first is None:
+        message = "Invalid type for parameter `start_page`, supported types: `integer, string`."
+        return Rejected(message)
+    if first < 1:
+        return Rejected("Parameter `start_page` should be a positive integer.")
+    return None
+
+
+def _url_error(url: object, *, hosts: bool = True) -> Rejected | None:
     try:
         parsed = httpx2.URL(url) if isinstance(url, str) else None
     except httpx2.InvalidURL:
@@ -1229,12 +1301,29 @@ def _url_error(url: object, *, hosts: bool = True) -> Rejected | None:
     return None
 
 
+def _sent_context(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        item["key"]: item.get("value")
+        for item in payload.get("context", [])
+        if isinstance(item, dict) and "key" in item
+    }
+
+
 def _rendered(payload: dict[str, Any]) -> bool:
     return bool(payload.get("render")) or payload.get("xhr") is True
 
 
 def _pages(payload: dict[str, Any]) -> int:
     return payload.get("pages", 1)
+
+
+def _fetched(payload: dict[str, Any]) -> int:
+    return 1 if payload["source"] in _ONE_PAGE else _pages(payload)
+
+
+def _first_page(payload: dict[str, Any]) -> int:
+    first = payload.get("start_page")
+    return 1 if first is None else int(first)
 
 
 def _input(payload: dict[str, Any]) -> str:

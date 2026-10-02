@@ -181,6 +181,47 @@ Usage Statistics agrees, and counts the `chatgpt` result as rendered.
   `walmart_product` without `product_id` returned the same `errors` body on Realtime.
   The Push-Pull body put `errors` after `trace_id`, and the Realtime body put it first.
 
+## Probes on 2026-10-02
+
+[Match the fake to the API before 0.1.0](https://github.com/ozanozbeker/oxyscraper/issues/105) sent 24 Push-Pull submissions on 2026-10-02 at 02:31 UTC, beside the upload job in [Cloud Storage](cloud-storage.md#probes-on-2026-10-02).
+The plan expected at most 3 billed results here.
+The run billed 2, for the `amazon_bestsellers` and `amazon_search` jobs below.
+The `walmart_search` job with `start_page: 0` faulted, so it billed nothing.
+
+### Input keys of the sources that take a batch
+
+Each of the 10 sources below checked its own input key and left out any other, except `url`.
+
+| Payload | Status | Body |
+| --- | --- | --- |
+| `url` on `amazon_product`, `amazon_search`, `bing_search`, `chatgpt`, `google_search` or `youtube_metadata` | 400 | ``Source `<source>` is not available with url parameter.`` |
+| `prompt` or `product_id` on `google_search` | 400 | `Query parameter is empty.` |
+| `prompt` or `product_id` on `universal`, or `query` on `amazon` or `google` | 400 | ``Parameter `url` is empty.`` |
+| No `query` on `amazon_bestsellers` | 202 | A job that fetched `https://www.amazon.com/Best-Sellers/zgbs/?pg=1&language=en_US`, ended `done` and billed |
+
+The `amazon_bestsellers` job object read `query: null`.
+So did the `amazon_search` job with `context:merchant_id` and no `query` in [Sorting and filters](live-amazon.md#sorting-and-filters), on 2026-09-29.
+A `universal` job object reads `query: ""` ([Push-Pull submission](live-api.md#push-pull-submission)).
+
+### `start_page`
+
+Each source below that takes a batch took a positive integer, as a number or as digits in a string.
+`walmart_search`, which takes no batch, took 0 and no string.
+
+| `start_page` | Source | Status | Body |
+| --- | --- | --- | --- |
+| `0` | `amazon_search`, `chatgpt`, `google_search` and `universal` | 400 | ``Parameter `start_page` should be a positive integer.`` |
+| `-1` or `"-1"` | `amazon_search` | 400 | The same message |
+| `"two"` | `amazon_search` and `google_search` | 400 | ``Invalid type for parameter `start_page`, supported types: `integer, string`.`` |
+| `2.5` | `amazon_search` | 400 | The same message |
+| `null` | `amazon_search` | 400 | The empty-`query` message, so `null` passes the check |
+| `"2"` | `amazon_search` | 202 | `start_page: 2`, a number, in the job object, and one result with `page: 2` |
+| `"2"` or `"two"` | `walmart_search` | 400 | `{"errors": ["[start_page]: This value should be of type int."]}` |
+| `0` | `walmart_search` | 202 | `start_page: 0` in the job object, then `faulted`, with one entry for `page=0` labelled `page: 1` |
+
+The rows for `amazon_search` with `0`, `-1` and `"two"` come from [Free checks](live-amazon.md#free-checks), on 2026-09-29.
+Each rejected payload to a source that takes a batch carried an empty input, so a check that passed could not bill.
+
 ## Keys by source
 
 [Reject the keys a source does not take](https://github.com/ozanozbeker/oxyscraper/issues/99) mapped the top-level keys of the 97 sources without batches on 2026-10-01, from 14:52 to 14:53 UTC.

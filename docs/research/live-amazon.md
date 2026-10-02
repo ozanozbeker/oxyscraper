@@ -93,7 +93,7 @@ On `amazon_search`, `query` comes after nearly every other check, so the 400 nam
 | `domain` | yes | ``Parameter `domain` with value `xx` is not available.`` |
 | `user_agent_type` | yes | ``Unsupported `user_agent_type` type.`` |
 | `callback_url` | yes | ``Invalid `callback_url`.`` |
-| `start_page`, `pages` | yes | ``Parameter `pages` should be a positive integer.`` and ``Parameter `pages` should not exceed 20.`` |
+| `start_page`, `pages` | yes | ``Parameter `start_page` should be a positive integer.``, ``Parameter `pages` should be a positive integer.`` and ``Parameter `pages` should not exceed 20.`` |
 | `context:sort_by` | yes | ``Parameter `context:sort_by` must be one of: most_recent, price_low_to_high, price_high_to_low, featured, average_review, bestsellers.`` |
 | `context:min_price`, `context:max_price` | yes | ``Parameter `context:min_price` must be a positive integer.`` |
 | `context:refinements` | yes | ``Parameter `context:refinements` must be an array of strings.`` |

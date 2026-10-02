@@ -14,8 +14,8 @@ import math
 import random
 import re
 from contextlib import AsyncExitStack, ExitStack
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from importlib.metadata import version
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar, cast
@@ -258,14 +258,69 @@ class IncompleteRunError(Exception):
         self.jobs: list[Job] = []
 
 
+@dataclass(frozen=True, kw_only=True)
+class Progress:
+    """The number of a run's payloads in each state, at one moment.
+
+    The six states from `unsubmitted` to `unfetched` sum to `payloads`.
+    After the run's last job, the snapshot stops changing and is the run's summary.
+
+    Attributes
+    ----------
+    payloads
+        The run's payloads.
+    unsubmitted
+        The payloads not yet sent, including those that oxy holds back.
+    pending
+        The payloads whose job is pending.
+    done
+        The payloads whose job is done.
+    faulted
+        The payloads whose job faulted.
+    rejected
+        The payloads that the API rejected, so no job exists.
+    unfetched
+        The payloads whose job oxy stopped checking.
+    written
+        The done jobs that oxy wrote to the destination.
+    uploaded
+        The jobs whose Cloud Storage upload succeeded.
+    unuploaded
+        The jobs whose Cloud Storage upload failed.
+    retries
+        The requests that the run sent again.
+    elapsed
+        The time since the run started, or the run's length once it ends.
+    """
+
+    payloads: int
+    unsubmitted: int
+    pending: int
+    done: int
+    faulted: int
+    rejected: int
+    unfetched: int
+    written: int
+    uploaded: int
+    unuploaded: int
+    retries: int
+    elapsed: timedelta
+
+    def __str__(self) -> str:
+        """Return the done count, every other count that is not zero, and the elapsed time."""
+        shown = [f"{self.done:,}/{self.payloads:,} done", *_counts(self)]
+        return ", ".join([*shown, _duration(self.elapsed.total_seconds())])
+
+
+_State = Literal["unsubmitted", "pending", "done", "faulted", "rejected", "unfetched"]
+
+
 @dataclass(eq=False)
 class _Line:
     """What happened to one payload of a run."""
 
     payload: Payload
-    state: Literal[
-        "unsubmitted", "pending", "done", "faulted", "rejected", "unfetched"
-    ] = "unsubmitted"
+    state: _State = "unsubmitted"
     job: Job | None = None
     rejection: Rejection | None = None
 
@@ -282,31 +337,79 @@ class _RunState:
     submitting: anyio.CancelScope = field(default_factory=anyio.CancelScope)
     running: anyio.CancelScope = field(default_factory=anyio.CancelScope)
     cause: OxylabsError | None = None
+    started: float = field(default_factory=anyio.current_time)
+    ended: float | None = None
+    retries: int = 0
+
+    def __post_init__(self) -> None:
+        self.snapshot = Progress(
+            payloads=len(self.lines),
+            unsubmitted=len(self.lines),
+            pending=0,
+            done=0,
+            faulted=0,
+            rejected=0,
+            unfetched=0,
+            written=0,
+            uploaded=0,
+            unuploaded=0,
+            retries=0,
+            elapsed=timedelta(),
+        )
+
+    def move(self, line: _Line, state: _State) -> None:
+        """Change a line's state, and replace the snapshot in one step.
+
+        A reader in another thread then sees the six states sum to `payloads`.
+        """
+        old, new = getattr(self.snapshot, line.state), getattr(self.snapshot, state)
+        changes = {line.state: old - 1, state: new + 1}
+        line.state = state
+        self.snapshot = replace(self.snapshot, **changes)
+        if line.job:
+            _logger.debug("Job %s is %s: %r", line.job.id, state, line.payload)
+
+    def progress(self) -> Progress:
+        end = anyio.current_time() if self.ended is None else self.ended
+        return replace(
+            self.snapshot,
+            retries=self.retries,
+            elapsed=timedelta(seconds=end - self.started),
+        )
 
     def stop(self, error: OxylabsError, scope: anyio.CancelScope) -> None:
         self.cause = self.cause or error
         scope.cancel()
 
     def end(self) -> None:
-        """Count the jobs that a stop left pending as unfetched, and log the stop."""
+        """Count the jobs that a stop left pending as unfetched, set the run's end, and log it."""
         halted = [line for line in self.lines if line.state == "pending"]
         for line in halted:
-            line.state = "unfetched"
-        if self.cause is None:
-            return
-        because = _because(self.cause)
-        if unsubmitted := sum(line.state == "unsubmitted" for line in self.lines):
-            _logger.warning(
-                "Stopped submitting, because %s; %s payloads stay unsubmitted",
-                because,
-                unsubmitted,
-            )
-        if halted:
-            _logger.warning(
-                "Stopped checking %s jobs, because %s; each may still bill",
-                len(halted),
-                because,
-            )
+            self.move(line, "unfetched")
+        self.ended = anyio.current_time()
+        if self.cause is not None:
+            because = _because(self.cause)
+            if unsubmitted := self.snapshot.unsubmitted:
+                _logger.warning(
+                    "Stopped submitting, because %s; %s payloads stay unsubmitted",
+                    because,
+                    unsubmitted,
+                )
+            if halted:
+                _logger.warning(
+                    "Stopped checking %s jobs, because %s; each may still bill",
+                    len(halted),
+                    because,
+                )
+        summary = self.progress()
+        _logger.info(
+            "Finished %s in %s: %s"
+            if self.cause is None
+            else "Stopped %s after %s: %s",
+            _counted(summary.payloads, "payload"),
+            _duration(summary.elapsed.total_seconds()),
+            ", ".join([f"{summary.done:,} done", *_counts(summary)]),
+        )
 
     def error(self) -> IncompleteRunError | None:
         rejections = [line.rejection for line in self.lines if line.rejection]
@@ -333,8 +436,14 @@ class Run:
     After the last job, it raises `IncompleteRunError` if a payload ended with no done or faulted job, and raises it again on each later call.
     """
 
-    def __init__(self, jobs: Iterator[Job]) -> None:
+    def __init__(self, jobs: Iterator[Job], progress: Callable[[], Progress]) -> None:
         self._jobs = jobs
+        self._progress = progress
+
+    @property
+    def progress(self) -> Progress:
+        """The number of the run's payloads in each state, now."""
+        return self._progress()
 
     def __iter__(self) -> Iterator[Job]:
         """Yield each job as it finishes."""
@@ -394,6 +503,11 @@ class AsyncRun:
     def __init__(self, jobs: MemoryObjectReceiveStream[Job], state: _RunState) -> None:
         self._jobs = jobs
         self._state = state
+
+    @property
+    def progress(self) -> Progress:
+        """The number of the run's payloads in each state, now."""
+        return self._state.progress()
 
     def __aiter__(self) -> Self:
         """Yield each job as it finishes."""
@@ -508,7 +622,7 @@ class AsyncSession:
         It takes the arguments of `stream`.
         """
         run = await self.stream(payloads, output_types=output_types)
-        return Run(iter(await run.all()))
+        return Run(iter(await run.all()), lambda: run.progress)
 
     async def stream(
         self,
@@ -563,14 +677,30 @@ class AsyncSession:
         return await self._status(job_id, fetched)
 
     async def _run(self, state: _RunState) -> None:
-        async with state.send:
-            with state.running:
-                async with anyio.create_task_group() as checks:
-                    with state.submitting:
-                        async with anyio.create_task_group() as submissions:
-                            for line in state.lines:
-                                submissions.start_soon(self._push, state, line, checks)
-            state.end()
+        _logger.info("Running %s with Push-Pull", _counted(len(state.lines), "payload"))
+        try:
+            async with state.send, anyio.create_task_group() as reports:
+                if self._progress_interval is not None:
+                    reports.start_soon(self._report, state, self._progress_interval)
+                with state.running:
+                    async with anyio.create_task_group() as checks:
+                        with state.submitting:
+                            async with anyio.create_task_group() as submissions:
+                                for line in state.lines:
+                                    submissions.start_soon(
+                                        self._push, state, line, checks
+                                    )
+                reports.cancel_scope.cancel()
+                state.end()
+        finally:
+            # A stop by the caller skips `end`, and `progress` reads no clock once the loop closes.
+            if state.ended is None:
+                state.ended = anyio.current_time()
+
+    async def _report(self, state: _RunState, interval: float) -> None:
+        while True:
+            await anyio.sleep(interval)
+            _logger.info("%s", state.progress())
 
     async def _push(self, state: _RunState, line: _Line, checks: TaskGroup) -> None:
         """Submit one payload, and start the checks of its job."""
@@ -581,21 +711,22 @@ class AsyncSession:
                 _DATA,
                 lambda response: _job(response.json(), [], payload=line.payload),
                 json=body,
+                state=state,
             )
         except OxylabsError as error:
             if error.status_code not in _REJECTED:
                 state.stop(error, state.submitting)
                 return
-            line.state = "rejected"
             line.rejection = Rejection(
                 payload=line.payload,
                 status_code=error.status_code,
                 message=error.message,
                 trace_id=error.trace_id,
             )
+            state.move(line, "rejected")
             _logger.warning("Rejected %s %s: %s", *_named(body), error)
             return
-        line.state = "pending"
+        state.move(line, "pending")
         checks.start_soon(self._check, state, line, line.job)
 
     async def _check(self, state: _RunState, line: _Line, pending: Job) -> None:
@@ -609,17 +740,19 @@ class AsyncSession:
             await state.waiting.acquire()
             try:
                 fetched = await self._results(
-                    pending.id, state.output_types, line.payload
+                    pending.id, state.output_types, line.payload, state
                 )
                 # A faulted job can have no results, so its 204 names its status alone.
                 if isinstance(fetched, str) and fetched != "pending":
-                    fetched = await self._status(pending.id, fetched, line.payload)
+                    fetched = await self._status(
+                        pending.id, fetched, line.payload, state
+                    )
             except OxylabsError as error:
                 state.waiting.release()
                 if error.status_code in _UNAUTHORIZED:
                     state.stop(error, state.running)
                     return
-                line.state = "unfetched"
+                state.move(line, "unfetched")
                 _logger.warning(
                     "Stopped checking job %s, because %s: %s %s",
                     pending.id,
@@ -629,8 +762,8 @@ class AsyncSession:
                 )
                 return
             if isinstance(fetched, Job):
-                job = fetched
-                line.state, line.job = job.status, job
+                job = line.job = fetched
+                state.move(line, job.status)
                 if job.status == "faulted":
                     _logger.warning(
                         "Job %s faulted: %s %s", job.id, job.source, job.input
@@ -641,7 +774,7 @@ class AsyncSession:
             state.waiting.release()
             limit = self._pending_limit
             if limit is not None and anyio.current_time() >= accepted + limit:
-                line.state = "unfetched"
+                state.move(line, "unfetched")
                 _logger.warning(
                     "Stopped checking job %s, because it is still pending after %s: %s %s",
                     pending.id,
@@ -656,6 +789,7 @@ class AsyncSession:
         job_id: str,
         output_types: Sequence[_OutputType],
         payload: Payload | None = None,
+        state: _RunState | None = None,
     ) -> Job | str:
         """Fetch a job with its results, or the status that a 204 names for a job with none."""
         params = {"type": ",".join(output_types)} if output_types else None
@@ -667,20 +801,25 @@ class AsyncSession:
             return _job(body["job"], body["results"], payload=payload)
 
         return await self._request(
-            "GET", f"{_DATA}/{job_id}/results", read, params=params
+            "GET", f"{_DATA}/{job_id}/results", read, params=params, state=state
         )
 
     async def _status(
-        self, job_id: str, status: str, payload: Payload | None = None
+        self,
+        job_id: str,
+        status: str,
+        payload: Payload | None = None,
+        state: _RunState | None = None,
     ) -> Job:
         """Fetch a job with no results from the status endpoint, with the status that its 204 named."""
         return await self._request(
             "GET",
             f"{_DATA}/{job_id}",
             lambda response: _job(response.json(), [], status=status, payload=payload),
+            state=state,
         )
 
-    async def _request(
+    async def _request(  # noqa: PLR0913
         self,
         method: str,
         url: str,
@@ -688,8 +827,11 @@ class AsyncSession:
         *,
         json: dict[str, Any] | None = None,
         params: Mapping[str, str] | None = None,
+        state: _RunState | None = None,
     ) -> _T:
         """Send a request under the retry policy, and return what `read` returns for the response.
+
+        Each retry counts toward the retries of `state`, the run that sent the request.
 
         Raises
         ------
@@ -706,13 +848,24 @@ class AsyncSession:
                 deadline = now + self._retry_limit if deadline is None else deadline
                 if not _retried(error) or now >= deadline:
                     raise
+                wait = min(random.uniform(0, ceiling), deadline - now)  # noqa: S311
+                if state:
+                    state.retries += 1
                 if json is not None and _unknown(error):
                     _logger.warning(
                         "Retrying a submission of %s %s after %s; the API may have created its job, and a duplicate bills",
                         *_named(json),
                         error,
                     )
-            await anyio.sleep(min(random.uniform(0, ceiling), deadline - now))  # noqa: S311
+                else:
+                    _logger.debug(
+                        "Retrying %s %s in %s after %s",
+                        method,
+                        url,
+                        _duration(wait),
+                        error,
+                    )
+            await anyio.sleep(wait)
             ceiling = min(ceiling * 2, _MAX_WAIT)
 
     async def _attempt(
@@ -798,7 +951,9 @@ class Session:
             partial(self._session.stream, payloads, output_types=output_types)
         )
         # A generator ends once it raises, and `iter` with a sentinel calls again, so a second `all` raises too.
-        return Run(iter(partial(self._next_job, run), None))
+        return Run(
+            iter(partial(self._next_job, run), None), partial(self._progress, run)
+        )
 
     def get(self, job_id: str, *, output_types: Sequence[_OutputType] = ()) -> Job:
         """Return a job as it stands, at once.
@@ -808,6 +963,14 @@ class Session:
         return self._portal.call(
             partial(self._session.get, job_id, output_types=output_types)
         )
+
+    def _progress(self, run: AsyncRun) -> Progress:
+        """Read the run's progress in the event loop's thread, which reads the loop's clock."""
+        try:
+            return self._portal.call(lambda: run.progress)
+        except RuntimeError:
+            # The portal stops after the run ends, and an ended run reads no clock.
+            return run.progress
 
     def _next_job(self, run: AsyncRun) -> Job | None:
         try:
@@ -910,15 +1073,34 @@ def _named(data: Mapping[str, Any]) -> tuple[str, str]:
 
 
 def _duration(seconds: float) -> str:
-    """Format a duration as uv does."""
-    whole = int(seconds)
+    """Format a duration as uv does, which truncates."""
+    # Integer microseconds, because `4.02 * 100` truncates to 401.
+    whole, micros = divmod(round(seconds * 1_000_000), 1_000_000)
     if whole >= 3600:  # noqa: PLR2004
         return f"{whole // 3600}h {whole % 3600 // 60:02}m {whole % 60:02}s"
     if whole >= 60:  # noqa: PLR2004
         return f"{whole // 60}m {whole % 60:02}s"
     if whole:
-        return f"{int(seconds * 100) / 100:.2f}s"
-    return f"{int(seconds * 1000)}ms"
+        return f"{whole}.{micros // 10_000:02}s"
+    return f"{micros // 1000}ms"
+
+
+def _counts(progress: Progress) -> list[str]:
+    """Name each count of `progress` after `done` that is not zero."""
+    names = ("faulted", "rejected", "unfetched", "pending", "unsubmitted")
+    names += ("written", "uploaded", "unuploaded")
+    counts = [
+        f"{getattr(progress, name):,} {name}"
+        for name in names
+        if getattr(progress, name)
+    ]
+    if progress.retries:
+        counts.append(_counted(progress.retries, "retry", "retries"))
+    return counts
+
+
+def _counted(count: int, noun: str, nouns: str | None = None) -> str:
+    return f"{count:,} {noun if count == 1 else nouns or noun + 's'}"
 
 
 def _job(

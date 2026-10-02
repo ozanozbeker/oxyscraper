@@ -1,7 +1,7 @@
 version: 2
 
 updates:
-  # `increase-if-necessary` leaves each `>=` floor alone and moves only `uv.lock`, so a floor rises only in a `deps:` commit.
+  # `increase-if-necessary` leaves each `>=` floor alone and moves only `uv.lock`, so a runtime floor rises only in a `deps:` commit.
   - package-ecosystem: uv
     directory: /
     schedule:

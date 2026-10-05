@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import gc
 import json
 import logging
 import math
@@ -7,6 +8,7 @@ import random
 import re
 import signal
 import threading
+import weakref
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -358,6 +360,29 @@ async def test_slow_loop_pauses_submissions(fake: FakeOxylabs) -> None:
         jobs = await run.all()
     assert submitted <= 200
     assert len(jobs) == 500
+
+
+@pytest.mark.parametrize("realtime", [False, True])
+async def test_run_releases_taken_results(realtime: bool) -> None:
+    """A run holds no results of a job that its loop has taken."""
+    payloads = [universal(str(page)) for page in range(3)]
+    async with open_async_session() as session:
+        run = await session.stream(payloads, realtime=realtime)
+        taken = [weakref.ref(job.results[0]) async for job in run]
+        gc.collect()
+        assert [result() for result in taken] == [None, None, None]
+        assert run.progress.done == 3
+
+
+def test_session_run_releases_taken_results() -> None:
+    """A `Session` run holds no results of a job that its loop has taken."""
+    payloads = [universal(str(page)) for page in range(3)]
+    with open_session() as session:
+        run = session.execute(payloads)
+        taken = [weakref.ref(job.results[0]) for job in run]
+        gc.collect()
+        assert [result() for result in taken] == [None, None, None]
+        assert run.progress.done == 3
 
 
 @on_mock_clock

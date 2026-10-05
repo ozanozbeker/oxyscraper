@@ -72,9 +72,9 @@ _UNAUTHORIZED = frozenset({httpx2.codes.UNAUTHORIZED, httpx2.codes.FORBIDDEN})
 _THROTTLE = re.compile(r"Access to \S+ has been limited to 1 req/s")
 # The API's 500 page names its trace ID only in its text.
 _TRACE_ID = re.compile(r"trace_id: ([\w-]+)")
-# Each name carries a UUID, which stays the same for an account.
+# Each name carries the account's UUID and client ID, which stay the same for an account.
 _RATE_LIMIT = re.compile(
-    r"x-ratelimit-(?P<name>total-requests|total-render-requests)-[\w-]+-(?P<kind>limit|remaining)"
+    r"x-ratelimit-(?P<name>total_requests|total_render_requests)_[\w-]+-(?P<kind>limit|remaining)"
 )
 # Starter's limits, which oxy assumes until a response carries the account's own.
 _STARTER: dict[_Limit, int] = {"total-requests": 50, "total-render-requests": 13}
@@ -654,7 +654,7 @@ class _Budgets:
             self._opened = anyio.current_time()
         for header, value in headers.items():
             if (match := _RATE_LIMIT.fullmatch(header)) and value.isdigit():
-                name = cast("_Limit", match["name"])
+                name = cast("_Limit", match["name"].replace("_", "-"))
                 if match["kind"] == "limit":
                     self.limits[name] = int(value)
                 else:

@@ -462,6 +462,8 @@ class _RunState:
             self.count(line, job, job.upload)
         # `send` checks for cancellation first, so a stop would lose the fetched job.
         self.send.send_nowait(job)
+        # The run reads no results after this, and keeping them holds the whole run in memory.
+        line.job = replace(job, results=[])
 
     def count(self, line: _Line, job: Job, upload: Upload) -> None:
         """Count a finished job's upload as uploaded or unuploaded, unless its job object cannot show the upload's outcome."""

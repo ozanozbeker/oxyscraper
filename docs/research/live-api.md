@@ -119,6 +119,29 @@ In the Sandbox run, a Realtime submission read 48 right after a Push-Pull fault 
 A Realtime response carries the value from its submission, not from the moment it returns.
 The Faults run's Realtime job returned after 24 seconds and read 47, the value of its submission window.
 
+### Headers with only a remaining count
+
+Since 2026-10-01, some accepted submissions and 429s also carry `x-ratelimit-*` names with a `-remaining` value and no `-limit`.
+A free probe on 2026-10-05 sent 36 `universal` fault jobs, 30 of them rendered, and billed no results ([Does oxy pace by the rate-limit headers that carry only a remaining count?](https://github.com/ozanozbeker/oxyscraper/issues/132)).
+The live suite's runs on 2026-10-05 supplied the `amazon_sellers` readings, the highest values and four rendered 429s.
+A `chatgpt` submission on 2026-10-01 carried `system_total_render` first.
+
+| Header | Returned on | Values |
+| --- | --- | --- |
+| `x-ratelimit-system_total_render-remaining` | Every response that carries the `total_render_requests` pair | 920 to 1448 |
+| `x-ratelimit-render-universal-limit-450-remaining` | Every rendered `universal` response | 302 to 670 |
+| `x-ratelimit-amazon_sellers-remaining` | Every `amazon_sellers` submission | 349, then 348 |
+
+The probe sent its rendered submissions 4 seconds apart.
+Between two samples, `system_total_render` and `render-universal-limit-450` moved by up to 157, in both directions.
+The account's `total_render_requests` `-remaining` read 12 on every one.
+No change matched one of the probe's submissions, so other accounts' jobs count against both headers.
+The two headers move together, and neither read 0.
+`amazon_sellers` read 349, then 348, on the suite's two `amazon_sellers` submissions 10 minutes apart.
+No other source carried a header named after it.
+No 429 message named any of the three, and the docs name none.
+Neither oxy nor the fake uses them.
+
 ### The window
 
 The limit counts submissions in a window of about one second, and `-remaining` recovers with time.

@@ -19,7 +19,6 @@ import httpx2
 import pytest
 
 import oxyscraper as oxy
-from oxyscraper._sessions import _RATE_LIMIT
 from oxyscraper.testing import FakeOxylabs, Outcome
 
 pytestmark = pytest.mark.live
@@ -204,15 +203,20 @@ def shape(data: Mapping[str, Any]) -> dict[str, str]:
 def headers(response: httpx2.Response) -> dict[str, str]:
     """Return the shape of the headers that the API sets, with each name's UUID and numbers replaced.
 
-    [Does oxy pace by the rate-limit headers that carry only a remaining count?](https://github.com/ozanozbeker/oxyscraper/issues/132) decides the `x-ratelimit-*` names that oxy does not read, so they stay out.
+    oxy cannot budget from a `-remaining` count without its `-limit`, so those names stay out.
+    Any other `x-ratelimit-*` name fails the comparison until oxy reads it, as [Does oxy pace by the rate-limit headers that carry only a remaining count?](https://github.com/ozanozbeker/oxyscraper/issues/132) decides.
     """
+
+    def kept(name: str) -> bool:
+        if name.startswith("x-ratelimit-") and name.endswith("-remaining"):
+            return f"{name.removesuffix('-remaining')}-limit" in response.headers
+        return name.startswith("x-") or name == "content-type"
+
     return shape(
         {
             DIGITS.sub("<n>", UUID.sub("<uuid>", name)): value
             for name, value in response.headers.items()
-            if name == "content-type"
-            or _RATE_LIMIT.fullmatch(name)
-            or (name.startswith("x-") and not name.startswith("x-ratelimit-"))
+            if kept(name)
         }
     )
 

@@ -117,12 +117,13 @@ async def test_job_object_keeps_known_keys(fake: FakeOxylabs) -> None:
 
 
 async def test_every_source(fake: FakeOxylabs) -> None:
-    """The fake takes each of the 123 documented sources, and returns its own job object."""
-    catalog = Path(__file__).parents[1] / "docs/research/parameter-catalog.md"
+    """The fake takes each of the 155 documented sources, and returns its own job object."""
+    research = Path(__file__).parents[1] / "docs/research"
+    notes = ["parameter-catalog.md", "live-job-objects.md"]
     keys = "|".join(testing._INPUT_KEYS)
     rows = re.findall(
         rf"^\| (?:[^|`]+\| )?`(\w+)` \| `({keys})` \|",
-        catalog.read_text(),
+        "".join((research / note).read_text() for note in notes),
         re.MULTILINE,
     )
     sources = dict(rows)
@@ -138,7 +139,10 @@ async def test_every_source(fake: FakeOxylabs) -> None:
         "google_ai_mode": {"render": "html"},
         "youtube_download": {"storage_type": "gcs", "storage_url": "bucket"},
         "youtube_metadata": {"parse": True},
-    } | {source: {"domain": "com"} for source in testing._REQUIRED_DOMAIN}
+    } | {
+        source: {key: {"domain": "com", "zip_code": "98101"}[key]}
+        for source, key in testing._REQUIRED.items()
+    }
 
     def payload(source: str, key: str) -> dict[str, Any]:
         value = f"{SANDBOX}/" if key == "url" else formats.get(source, "x")
@@ -150,9 +154,9 @@ async def test_every_source(fake: FakeOxylabs) -> None:
             (await http.post(DATA, json=payload(source, key))).json()
             for source, key in sources.items()
         ]
-    assert len(sources) == 123
+    assert len(sources) == 155
     assert [job["source"] for job in jobs] == list(sources)
-    assert sorted(len(job) for job in jobs) == [7] * 97 + [8] * 3 + [34] * 23
+    assert sorted(len(job) for job in jobs) == [7] * 127 + [8] * 5 + [34] * 23
 
 
 async def test_short_job_object(fake: FakeOxylabs) -> None:
@@ -639,6 +643,10 @@ async def test_free_checks(
         (
             {"source": "grainger_search"},
             ["[domain]: This field is missing.", "[query]: This field is missing."],
+        ),
+        (
+            {"source": "safeway_search", "query": "milk"},
+            ["[zip_code]: This field is missing."],
         ),
         (
             {"source": "youtube_channel", "category_id": "x"},

@@ -37,6 +37,7 @@ The raw captures stay outside the repo.
 - **Docs.**
   No source page of today's docs names 35 of the 123 sources, and all 35 took a job.
   Today's docs name 32 sources that the [Parameter catalog](parameter-catalog.md) of 2026-09-24 does not, and the API knows all 32.
+  [New sources](#new-sources) maps their keys and job objects.
 
 ## Runs
 
@@ -183,6 +184,80 @@ The run sent each of them without an input, which the API rejects for free.
 Each returned 400 with an `errors` list that named its input key, such as `[product_id]: This field is missing.`, so the API knows all 32.
 `safeway_product` and `safeway_search` also listed `[zip_code]: This field is missing.`
 
+## New sources
+
+[Add the 32 grocery sources to the fake](https://github.com/ozanozbeker/oxyscraper/issues/127) probed the 32 sources that the docs added after the catalog, on 2026-10-05 from 14:16 to 14:17 UTC.
+Each source got one Push-Pull submission with an empty input and the 74 candidate keys of [Keys by source](live-parameters.md#keys-by-source), then a batch of two empty `query` values.
+Ten Safeway submissions with an empty `query` tried values of `zip_code`.
+These spent 0 results.
+From 14:17 to 14:20 UTC, one Push-Pull job per source sent its docs sample of 2026-09-30.
+The plan expected at most 32 results, and the run billed 22, 7 of them rendered.
+Usage Statistics agrees.
+
+| Target | Source | Input key | Keys beyond the shared ones |
+| --- | --- | --- | --- |
+| Baker's Plus | `bakersplus_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Baker's Plus | `bakersplus_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| City Market | `citymarket_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| City Market | `citymarket_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| Dillons | `dillons_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Dillons | `dillons_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| Food 4 Less | `foodfourless_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Food 4 Less | `foodfourless_search` | `query` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Fred Meyer | `fredmeyer_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Fred Meyer | `fredmeyer_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| Fry's Food | `frysfood_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Fry's Food | `frysfood_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| Gerbes | `gerbes_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Gerbes | `gerbes_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| Harris Teeter | `harristeeter_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Harris Teeter | `harristeeter_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| King Soopers | `kingsoopers_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| King Soopers | `kingsoopers_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| Mariano's | `marianos_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Mariano's | `marianos_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| Metro Market | `metromarket_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Metro Market | `metromarket_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| Pick 'n Save | `picknsave_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Pick 'n Save | `picknsave_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| QFC | `qfc_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| QFC | `qfc_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| Ralphs | `ralphs_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Ralphs | `ralphs_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+| Safeway | `safeway_product` | `product_id` | `zip_code` |
+| Safeway | `safeway_search` | `query` | `zip_code` |
+| Smith's Food and Drug | `smithsfoodanddrug_product` | `product_id` | `delivery_zip`, `fulfillment_type`, `store_id` |
+| Smith's Food and Drug | `smithsfoodanddrug_search` | `query` | `brand`, `delivery_zip`, `fulfillment_type`, `price_range`, `store_id` |
+
+- **Keys.**
+  The 15 targets other than Safeway are Kroger stores, and their sources take the keys of `kroger_product` and `kroger_search`.
+  `foodfourless_search` takes no `brand` or `price_range`, and its job fetched `myfood4less.com` instead of a Kroger site.
+  The Safeway sources take `zip_code` and none of Kroger's keys.
+- **Batches.**
+  None of the 32 takes a batch.
+  Each value returned ``Source `<source>` is not available with a batch request.`` in a 202.
+- **`zip_code`.**
+  Both Safeway sources require it, and their 400 lists `[zip_code]: This field is missing.` without it.
+  It takes a ZIP code that Safeway serves, as the docs said on 2026-09-30.
+  `98101` and `94105` passed.
+  The 400 listed `[zip_code]: The value you selected is not a valid choice.` for `10001`, `33101`, `00000`, `9810`, `98101-1234` and `x`.
+  An empty or `null` value added `This value should not be blank.` to the list, and the integer `98101` added `This value should be of type string.` to it.
+  The fake cannot hold the list, so it checks only that the key is there.
+- **Job objects.**
+  Each job object held the payload alone, as for the other sources that take no batch: 7 fields, or 8 with `zip_code`.
+- **Results.**
+  Each results entry carried `_request`, `_response` and `session_info`.
+- **Forced rendering.**
+  Every `_product` source but `foodfourless_product` ran with `is_render_forced: true`, and so did `harristeeter_search` and `safeway_search`.
+  No submission carried the rendered limit's headers.
+- **Faults.**
+  10 jobs faulted with 613 and billed nothing: both Safeway jobs, and the `_product` jobs of City Market, Dillons, Fry's Food, Mariano's, Metro Market, QFC, Ralphs and Smith's Food and Drug.
+  `0001111016338` ran on 3 targets and faulted on 7, so the product ID does not explain the faults.
+- **Docs.**
+  Today's docs have no page for any source.
+  The [llms.txt index][llms] of 2026-10-05 lists no `api-targets` page, and each old page, such as `api-targets/e-commerce/amazon.md`, returns "Page Not Found".
+  The index names the API "Web Scraper API (Classic)", beside a new "Web API" at `webapi.oxylabs.io`, whose `GET /v1/scrapers` lists its scrapers.
+
 ## Usage Statistics
 
 The run read `/v2/stats` for 2026-09-30 before its first job and at 22:03, after every job but `google_shopping_product` finished.
@@ -195,8 +270,6 @@ Another client on the account added 6,770 `amazon_product` results in the same w
 
 - **Google keys.**
   The three jobs that sent the keys their job objects leave out faulted, so the run could not see whether the keys take effect.
-- **New sources.**
-  The run created no job on the 32 sources that the docs added after the catalog, so their job objects are unknown.
 
 ## Sources
 

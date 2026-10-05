@@ -7,6 +7,7 @@ The two entries on storage endpoints, the entry on a 400's `errors` list, the en
 The entries on `pages` limits, on a job larger than a rate limit and from the job object run cite the pages as published on 2026-09-30.
 The entries from the input check run and the entry on secrets in `storage_url` cite the pages as published on 2026-10-01.
 The entry on `start_page` and `pages` cites the pages as the catalog read them on 2026-09-24.
+The entry on the page of every source cites the docs as published on 2026-10-05.
 
 ## Statements the API contradicts
 
@@ -673,6 +674,15 @@ The entry on `start_page` and `pages` cites the pages as the catalog read them o
   Their old pages return "Page Not Found" with status 200.
 - **API:** all 35 took a Push-Pull job on 2026-09-30.
 - **Evidence:** [Docs changes since the catalog](docs/research/live-job-objects.md#docs-changes-since-the-catalog).
+
+### The docs dropped the page of every source
+
+- **Docs:** on 2026-10-05 neither the [llms.txt index][llms] nor the sitemap lists an `api-targets` page.
+  Each old page, such as `api-targets/e-commerce/amazon.md` or `api-targets/e-commerce/safeway.md`, returns "Page Not Found" with status 200.
+  So no page names a source, its input key or its parameters.
+- **API:** the 32 sources that the docs added by 2026-09-30 each took a Push-Pull job on 2026-10-05.
+  `safeway_product` and `safeway_search` require `zip_code`, and take only the ZIP codes that Safeway serves.
+- **Evidence:** [New sources](docs/research/live-job-objects.md#new-sources).
 
 ### Target Product and Target Category: the input has a format check
 

@@ -1092,7 +1092,8 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
         headers: dict[str, str] = {}
         for limit in self._counted(rendered=rendered):
             used = self._used[limit] if in_window else 0
-            prefix = f"x-ratelimit-{limit}-{_LIMIT_UUID}"
+            name = limit.replace("-", "_")
+            prefix = f"x-ratelimit-{name}_{_LIMIT_UUID}-{_CLIENT_ID}"
             headers[f"{prefix}-limit"] = str(self._limits[limit])
             headers[f"{prefix}-remaining"] = str(self._limits[limit] - used)
         return headers

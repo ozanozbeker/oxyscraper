@@ -1,0 +1,28 @@
+name: Live
+
+# The suite bills about 11 results, so it runs weekly instead of on each pull request (CONTRIBUTING.md).
+on:
+  schedule:
+    - cron: "17 6 * * 3"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    environment: live
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv sync --locked --all-extras
+      - run: uv run --no-sync pytest -m live
+        env:
+          OXY_WSA_USERNAME: ${{ secrets.OXY_WSA_USERNAME }}
+          OXY_WSA_PASSWORD: ${{ secrets.OXY_WSA_PASSWORD }}
+          OXYLAKE_URI: ${{ secrets.OXYLAKE_URI }}

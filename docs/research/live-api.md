@@ -104,6 +104,9 @@ Every accepted submission returned one limit, and a rendered one returned two.
 | `x-ratelimit-total-render-requests-<uuid>-limit` | `13` | The `render: png` and `xhr: true` submissions |
 | `x-ratelimit-total-render-requests-<uuid>-remaining` | `12` | The same responses |
 
+On 2026-10-01 the API renamed both pairs to `x-ratelimit-total_requests_<uuid>-<client_id>-limit` and `x-ratelimit-total_render_requests_<uuid>-<client_id>-limit`, each with its `-remaining` header.
+The examples in this note keep the names of their runs.
+
 Both names carry the same UUID, and it did not change during the run.
 The values match Starter's 50 jobs per second and 13 rendered jobs per second ([Rate Limits][rate-limits]).
 The docs' example name, `x-ratelimit-internal-api-default-limit`, appeared on no response.

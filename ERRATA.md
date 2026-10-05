@@ -313,14 +313,16 @@ The entry on the page of every source cites the docs as published on 2026-10-05.
   A job's pages also count against the rendered limit, and they count even where the job fetches one page: a `universal` job with `pages: 3` took 3, although its job object read `pages: 1`.
 - **Evidence:** [What counts against the limit](docs/research/live-api.md#what-counts-against-the-limit), [Exceeding the limit](docs/research/live-api.md#exceeding-the-limit) and [A job larger than the limit](docs/research/live-api.md#a-job-larger-than-the-limit).
 
-### Rate Limits: the header names carry a UUID, and no header gives a reset time
+### Rate Limits: the header names carry a UUID and a client ID, and no header gives a reset time
 
 - **Docs:** [Rate Limits][rate-limits] gives the pattern `x-ratelimit-limit_name-limit`.
   Its only example, a screenshot from December 2023, shows `x-ratelimit-internal-api-default-limit: 12000`.
-- **API:** submissions returned `x-ratelimit-total-requests-<uuid>-limit: 50`, and rendered jobs added `x-ratelimit-total-render-requests-<uuid>-limit: 13`.
-  Each came with a matching `-remaining` header.
+- **API:** submissions return `x-ratelimit-total_requests_<uuid>-<client_id>-limit: 50`, and rendered jobs add `x-ratelimit-total_render_requests_<uuid>-<client_id>-limit: 13`.
+  Each comes with a matching `-remaining` header.
+  Until 2026-09-30 the names read `x-ratelimit-total-requests-<uuid>-limit` and `x-ratelimit-total-render-requests-<uuid>-limit`.
+  Since 2026-10-01 some submissions also carry names with only a `-remaining` value, such as `x-ratelimit-system_total_render-remaining`.
   No response carried `Retry-After` or a reset header, including a 429.
-- **Evidence:** [Limits and header names](docs/research/live-api.md#limits-and-header-names).
+- **Evidence:** [Limits and header names](docs/research/live-api.md#limits-and-header-names), and the live suite's run on 2026-10-05 in [Does oxy pace by the rate-limit headers that carry only a remaining count?](https://github.com/ozanozbeker/oxyscraper/issues/132).
 
 ### Push-Pull: the content endpoint returns `png` as Base64 text
 

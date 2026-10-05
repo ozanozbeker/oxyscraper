@@ -16,8 +16,10 @@ pytestmark = pytest.mark.anyio
 DATA = "https://data.oxylabs.io/v1/queries"
 REALTIME = "https://realtime.oxylabs.io/v1/queries"
 SANDBOX = "https://sandbox.oxylabs.io"
-LIMIT = "x-ratelimit-total-requests-00000000-0000-0000-0000-000000000000"
-RENDER_LIMIT = "x-ratelimit-total-render-requests-00000000-0000-0000-0000-000000000000"
+LIMIT = "x-ratelimit-total_requests_00000000-0000-0000-0000-000000000000-123456"
+RENDER_LIMIT = (
+    "x-ratelimit-total_render_requests_00000000-0000-0000-0000-000000000000-123456"
+)
 THROTTLE = (
     "Access to www.amazon.com has been limited to 1 req/s due to a low success rate."
 )

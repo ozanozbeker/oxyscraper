@@ -114,6 +114,9 @@ To run the suite locally, put the same three variables in `.env`:
 uv run --env-file .env pytest -m live
 ```
 
+Set `OXY_CAPTURES` to a folder outside the repo to keep every request and response in `exchanges.jsonl`.
+The captures hold the account's client name, so they stay out of the repo and out of CI.
+
 ## Dependencies
 
 Each runtime floor in `pyproject.toml` is as low as the `lowest` job proves, except the `httpx2` floor.

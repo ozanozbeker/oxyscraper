@@ -598,7 +598,7 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
     limit
         The total limit of each one-second window, which counts every job's `pages`.
     render_limit
-        The rendered limit, which counts only payloads with `render` or `xhr: true`.
+        The rendered limit, which counts payloads with `render` or `xhr: true`, and every payload of `chatgpt`, `gemini` and `perplexity`.
 
     Attributes
     ----------
@@ -1346,7 +1346,11 @@ def _sent_context(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _rendered(payload: dict[str, Any]) -> bool:
-    return bool(payload.get("render")) or payload.get("xhr") is True
+    return (
+        bool(payload.get("render"))
+        or payload.get("xhr") is True
+        or payload.get("source") in _LLM_SOURCES
+    )
 
 
 def _pages(payload: dict[str, Any]) -> int:

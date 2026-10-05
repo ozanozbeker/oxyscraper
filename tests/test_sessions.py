@@ -294,6 +294,17 @@ async def test_pacing(limit: int, render_limit: int, realtime: bool) -> None:
 
 
 @on_mock_clock
+async def test_llm_pacing(fake: FakeOxylabs) -> None:
+    """A run of LLM payloads gets no 429, because each counts against the rendered limit."""
+    payloads = [
+        oxy.Payload(source="chatgpt", prompt=f"Question {n}") for n in range(40)
+    ]
+    async with open_async_session() as session:
+        run = await session.execute(payloads)
+    assert (len(run.all()), run.progress.retries) == (40, 0)
+
+
+@on_mock_clock
 async def test_payload_above_a_limit(fake: FakeOxylabs) -> None:
     """A rendered payload with `pages: 14` ends as a Rejection without a retry, and the payloads beside it run."""
     large = universal("large", render="html", pages=14)

@@ -1,6 +1,6 @@
 [project]
 name = "oxyscraper"
-version = "0.0.1"
+version = "0.1.0"
 description = "Unofficial Python library and CLI for the Oxylabs Web Scraper API."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -76,6 +76,8 @@ _TRACE_ID = re.compile(r"trace_id: ([\w-]+)")
 _RATE_LIMIT = re.compile(
     r"x-ratelimit-(?P<name>total_requests|total_render_requests)_[\w-]+-(?P<kind>limit|remaining)"
 )
+# The API counts every payload of these sources against the rendered limit, without `render` (docs/research/live-api.md).
+_RENDERED_SOURCES = frozenset({"chatgpt", "gemini", "perplexity"})
 # Starter's limits, which oxy assumes until a response carries the account's own.
 _STARTER: dict[_Limit, int] = {"total-requests": 50, "total-render-requests": 13}
 
@@ -1715,7 +1717,11 @@ def _pages(body: Mapping[str, Any]) -> int:
 
 def _cost(body: Mapping[str, Any], values: int = 1) -> dict[_Limit, int]:
     """Return what a submission of `values` payloads like `body` takes from each limit it counts against."""
-    rendered = bool(body.get("render")) or body.get("xhr") is True
+    rendered = (
+        bool(body.get("render"))
+        or body.get("xhr") is True
+        or body["source"] in _RENDERED_SOURCES
+    )
     names: list[_Limit] = ["total-requests", "total-render-requests"]
     return dict.fromkeys(names[: 1 + rendered], values * _pages(body))
 

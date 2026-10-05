@@ -904,6 +904,26 @@ async def test_rendered_limit(fake: FakeOxylabs) -> None:
 
 
 @on_mock_clock
+@pytest.mark.parametrize("source", ["chatgpt", "gemini", "perplexity"])
+async def test_llm_sources_count_against_the_rendered_limit(
+    fake: FakeOxylabs, source: str
+) -> None:
+    """Each value of an LLM source's batch counts against the rendered limit, without `render`."""
+    prompts = ["What is 2 + 2?", "Name a primary color."]
+    async with client(fake) as http:
+        batch = await http.post(
+            f"{DATA}/batch", json={"source": source, "prompt": prompts}
+        )
+        await anyio.sleep(1)
+        over = await http.post(
+            f"{DATA}/batch", json={"source": source, "prompt": prompts * 7}
+        )
+    assert batch.headers[f"{RENDER_LIMIT}-remaining"] == "11"
+    assert over.status_code == 429
+    assert over.json()["message"] == "Too many requests. (Total Render Dynamic)."
+
+
+@on_mock_clock
 async def test_realtime(fake: FakeOxylabs) -> None:
     """Realtime returns the job object and its results in one response."""
 

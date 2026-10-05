@@ -638,6 +638,14 @@ The entry on the page of every source cites the docs as published on 2026-10-05.
   Usage Statistics counted all 15 of the run's `amazon_bestsellers` results as rendered.
 - **Evidence:** [Forced rendering](docs/research/live-amazon.md#forced-rendering).
 
+### Rate Limits: the LLM sources count against the rendered limit without `render`
+
+- **Docs:** [LLMs and AI][llms-and-ai] says the API renders every LLM job by default, and that a payload must not send `render`.
+  [Rate Limits][rate-limits] gives Starter 13 rendered jobs per second, and neither page says whether a job rendered by default counts against that.
+- **API:** on 2026-10-05, each `chatgpt`, `gemini` and `perplexity` payload counted against the rendered limit, and a batch of 14 `chatgpt` prompts returned `Too many requests. (Total Render Dynamic).`
+  `chatgpt` first counted on 2026-10-01, and on 2026-09-30 `chatgpt` and `gemini` jobs carried only the total limit's headers.
+- **Evidence:** [What counts against the limit](docs/research/live-api.md#what-counts-against-the-limit) and [Count LLM sources against the rendered limit](https://github.com/ozanozbeker/oxyscraper/issues/134).
+
 ### Response Codes: a faulted job can have no results entry
 
 - **Docs:** [Response Codes][response-codes] gives 612 and 613 for a job that Oxylabs failed, and does not say what the results endpoint returns for one.

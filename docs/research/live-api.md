@@ -173,6 +173,12 @@ In the Sandbox run, a submission sent at 20:07:20.04 still read 45, because its 
 | A rendered job with `pages: 3` | 3 from each limit | The job read 10 of 13 and 47 of 50 in a fresh window | [2026-09-30](#a-job-larger-than-the-limit) |
 | A job with more pages than `-remaining` | 0 | Jobs with `pages` 20, 20, 20 and 10 read 30, 10, a 429 and 0 | [2026-09-30](#a-job-larger-than-the-limit) |
 | Checks at 30 to 120 a second | 0 | Batches of 30 sent during them each read 20 | [2026-09-30](#checks-at-a-runs-rate) |
+| A batch of 2 `chatgpt`, `gemini` or `perplexity` prompts, without `render` | 2 from each limit | Each batch read 11 of 13 and 48 of 50 in a fresh window | [2026-10-05](https://github.com/ozanozbeker/oxyscraper/issues/134) |
+
+Since 2026-10-01, the API counts each `chatgpt` payload against the rendered limit, without `render`.
+On 2026-09-30, `chatgpt` and `gemini` jobs without `render` still carried only the total limit's headers.
+On 2026-10-05, the API counted `gemini` and `perplexity` payloads against the rendered limit too.
+A batch of 14 `chatgpt` prompts returned `Too many requests. (Total Render Dynamic).` and created no job ([Count LLM sources against the rendered limit](https://github.com/ozanozbeker/oxyscraper/issues/134)).
 
 ### Exceeding the limit
 

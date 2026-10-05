@@ -73,7 +73,7 @@ uv tool install 'oxyscraper[cli]'
 This installs two commands, `oxy` and `oxyscraper`, which do the same thing.
 `uv add oxyscraper` installs the library alone, and its commands then print the install command above.
 
-`oxy` reads the credentials of a Web Scraper API user from `OXY_WSA_USERNAME` and `OXY_WSA_PASSWORD`.
+`oxy` reads the credentials of a Web Scraper API (Classic) user from `OXY_WSA_USERNAME` and `OXY_WSA_PASSWORD`.
 No option takes the password, so it never lands in your shell history, and `oxy` loads no `.env` file.
 
 ## Run jobs

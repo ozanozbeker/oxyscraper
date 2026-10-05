@@ -10,7 +10,7 @@ authors = [{ name = "Ozan Ozbeker", email = "github@ozanozbeker.com" }]
 keywords = ["oxylabs", "scraping", "web-scraper-api"]
 # The Python classifiers and the test matrix in `ci.yml` list the same versions (CONTRIBUTING.md).
 classifiers = [
-  "Development Status :: 1 - Planning",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",

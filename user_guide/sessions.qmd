@@ -9,7 +9,7 @@ Each `execute` call starts one run.
 
 ## Run payloads
 
-`Session` takes the credentials of a Web Scraper API user as arguments.
+`Session` takes the username and password of a Web Scraper API (Classic) user as arguments.
 The library reads no environment variable and no `.env` file, so your code chooses where the credentials come from:
 
 ```{python}
@@ -32,6 +32,8 @@ with oxy.Session(username=USERNAME, password=PASSWORD) as session:
 ```
 
 An empty username or password raises `ValueError` before any request.
+The Oxylabs docs lead with their newer Web API, and a new account may hold only a Web API key.
+The Classic API returns 401 for that key, and the run stops as [Errors that stop a run](failures.qmd#errors-that-stop-a-run) describes.
 
 `execute` starts submitting at once and returns a `Run`.
 The run yields each job as it finishes, so the loop body handles early jobs while oxy submits and checks later ones.

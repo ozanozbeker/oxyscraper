@@ -210,7 +210,7 @@ _CONTEXT: dict[str, dict[str, Any]] = {
     "youtube_metadata": _FIRST_FIVE,
     "youtube_subtitles": _FIRST_FIVE | {"language_code": None, "subtitle_origin": None},
 }
-# Each of the 97 sources without batches takes the shared keys and those of its row (docs/research/live-parameters.md#keys-by-source).
+# Each of the 129 sources without batches takes the shared keys and those of its row (docs/research/live-parameters.md#keys-by-source, live-job-objects.md#new-sources).
 # The maintainer edits the table by hand when a caller or a live run finds a mismatch with the API.
 _SHARED_KEYS = frozenset(
     {
@@ -233,6 +233,7 @@ _SHARED_KEYS = frozenset(
 _DOMAIN = frozenset({"domain"})
 _PAGED = _DOMAIN | {"start_page"}
 _STORE = frozenset({"delivery_zip", "fulfillment_type", "store_id"})
+_KROGER_SEARCH = _STORE | {"brand", "price_range"}
 _YOUTUBE_FILTERS = frozenset(
     {
         "360",
@@ -273,6 +274,8 @@ _TAKES: dict[str, frozenset[str]] = {
         }
     ),
     "avnet_search": _PAGED,
+    "bakersplus_product": _STORE,
+    "bakersplus_search": _KROGER_SEARCH,
     "bedbathandbeyond": frozenset(),
     "bedbathandbeyond_product": _DOMAIN,
     "bedbathandbeyond_search": _PAGED,
@@ -290,10 +293,14 @@ _TAKES: dict[str, frozenset[str]] = {
     "cdiscount": frozenset(),
     "cdiscount_product": _DOMAIN,
     "cdiscount_search": _PAGED,
+    "citymarket_product": _STORE,
+    "citymarket_search": _KROGER_SEARCH,
     "costco": frozenset(),
     "costco_product": _DOMAIN,
     "costco_search": _PAGED,
     "dcard_search": _DOMAIN,
+    "dillons_product": _STORE,
+    "dillons_search": _KROGER_SEARCH,
     "ebay": frozenset(),
     "ebay_product": _DOMAIN,
     "ebay_search": _PAGED,
@@ -306,9 +313,19 @@ _TAKES: dict[str, frozenset[str]] = {
     "flipkart": frozenset(),
     "flipkart_product": _DOMAIN,
     "flipkart_search": _PAGED,
+    "foodfourless_product": _STORE,
+    "foodfourless_search": _STORE,
+    "fredmeyer_product": _STORE,
+    "fredmeyer_search": _KROGER_SEARCH,
+    "frysfood_product": _STORE,
+    "frysfood_search": _KROGER_SEARCH,
+    "gerbes_product": _STORE,
+    "gerbes_search": _KROGER_SEARCH,
     "grainger": frozenset(),
     "grainger_product": _DOMAIN,
     "grainger_search": _DOMAIN,
+    "harristeeter_product": _STORE,
+    "harristeeter_search": _KROGER_SEARCH,
     "idealo_search": _DOMAIN,
     "indiamart": frozenset(),
     "indiamart_product": _DOMAIN,
@@ -316,11 +333,11 @@ _TAKES: dict[str, frozenset[str]] = {
     "instacart": frozenset(),
     "instacart_product": _DOMAIN,
     "instacart_search": _DOMAIN,
+    "kingsoopers_product": _STORE,
+    "kingsoopers_search": _KROGER_SEARCH,
     "kroger": _STORE,
     "kroger_product": _STORE,
-    "kroger_search": frozenset(
-        {"brand", "delivery_zip", "fulfillment_type", "price_range", "store_id"}
-    ),
+    "kroger_search": _KROGER_SEARCH,
     "lazada": frozenset({"start_page"}),
     "lazada_product": _DOMAIN,
     "lazada_search": _PAGED,
@@ -339,6 +356,8 @@ _TAKES: dict[str, frozenset[str]] = {
     "magazineluiza": frozenset(),
     "magazineluiza_product": _DOMAIN,
     "magazineluiza_search": _PAGED,
+    "marianos_product": _STORE,
+    "marianos_search": _KROGER_SEARCH,
     "mediamarkt": frozenset(),
     "mediamarkt_product": _DOMAIN,
     "mediamarkt_search": _PAGED,
@@ -360,13 +379,25 @@ _TAKES: dict[str, frozenset[str]] = {
     "mercadolibre_search": _DOMAIN,
     "mercadolivre_product": _DOMAIN,
     "mercadolivre_search": _DOMAIN,
+    "metromarket_product": _STORE,
+    "metromarket_search": _KROGER_SEARCH,
     "petco": frozenset(),
     "petco_search": frozenset({"domain", "fulfillment_type", "start_page"}),
+    "picknsave_product": _STORE,
+    "picknsave_search": _KROGER_SEARCH,
     "publix": frozenset({"store_id"}),
     "publix_product": frozenset({"store_id"}),
     "publix_search": frozenset({"store_id"}),
+    "qfc_product": _STORE,
+    "qfc_search": _KROGER_SEARCH,
     "rakuten": frozenset(),
     "rakuten_search": _DOMAIN,
+    "ralphs_product": _STORE,
+    "ralphs_search": _KROGER_SEARCH,
+    "safeway_product": frozenset({"zip_code"}),
+    "safeway_search": frozenset({"zip_code"}),
+    "smithsfoodanddrug_product": _STORE,
+    "smithsfoodanddrug_search": _KROGER_SEARCH,
     "staples_search": _PAGED,
     "target": _STORE,
     "target_category": _STORE,
@@ -401,19 +432,24 @@ _TAKES: dict[str, frozenset[str]] = {
     "youtube_video_trainability": frozenset(),
     "zillow": frozenset(),
 }
-# The 123 sources that the docs listed on 2026-09-24 (docs/research/parameter-catalog.md).
+# The 123 sources that the docs listed on 2026-09-24 (docs/research/parameter-catalog.md), and the 32 they added by 2026-09-30 (docs/research/live-job-objects.md#new-sources).
 _SOURCES = frozenset(_CONTEXT) | _LLM_SOURCES | frozenset(_TAKES)
 # The 26 sources that took a batch on 2026-09-28 are the LLM sources and those with a full job object (docs/research/live-parameters.md).
 _BATCH_SOURCES = _LLM_SOURCES | frozenset(_CONTEXT)
-# The names of the 97 other sources give their input keys, except these three (docs/research/live-parameters.md#input-checks).
+# The names of the 129 other sources give their input keys, except these three (docs/research/live-parameters.md#input-checks).
 _NAMED_KEYS = {
     "target_category": "category_id",
     "youtube_channel": "channel_handle",
     "youtube_video_trainability": "video_id",
 }
-_REQUIRED_DOMAIN = frozenset(
-    {"grainger_product", "grainger_search", "mercadolibre_product"}
-)
+# The key that each of these sources requires besides its input.
+_REQUIRED = {
+    "grainger_product": "domain",
+    "grainger_search": "domain",
+    "mercadolibre_product": "domain",
+    "safeway_product": "zip_code",
+    "safeway_search": "zip_code",
+}
 # `walmart_search` without `query` fetches walmart.com/all-departments.
 _OPTIONAL_INPUT = frozenset({"walmart_search"})
 _FORMATS = {
@@ -426,7 +462,7 @@ _FORMATS = {
 }
 _ASIN = re.compile(r"[A-Z0-9]+")
 _ASIN_LENGTH = 10
-# Of the 97, these return results without the target's request and response.
+# Of the 129, these return results without the target's request and response.
 _BARE_RESULTS = frozenset({"youtube_channel", "youtube_search", "youtube_search_max"})
 # A 1x1 PNG, so an image library opens the default `png` content.
 _PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAAABJRU5ErkJggg=="
@@ -1201,8 +1237,8 @@ def _field_errors(source: str, payload: dict[str, Any]) -> list[str]:
         for name in payload
         if name not in takes
     ]
-    if source in _REQUIRED_DOMAIN and "domain" not in payload:
-        errors.append("[domain]: This field is missing.")
+    if (required := _REQUIRED.get(source)) and required not in payload:
+        errors.append(f"[{required}]: This field is missing.")
     # These sources take any int, 0 included, and no text.
     start_page = payload.get("start_page")
     if (

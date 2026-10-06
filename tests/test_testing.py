@@ -238,6 +238,30 @@ async def test_batch(fake: FakeOxylabs) -> None:
     assert response.headers[f"{LIMIT}-remaining"] == "48"
 
 
+async def test_amazon_product_url(fake: FakeOxylabs) -> None:
+    """An `amazon` product URL returns an `amazon_product` job object with the ASIN as `query`."""
+    url = "https://www.amazon.com/dp/1492056359?th=1"
+    async with client(fake) as http:
+        response = await http.post(DATA, json={"source": "amazon", "url": url})
+    job = response.json()
+    assert (job["source"], job["url"], job["query"]) == (
+        "amazon_product",
+        url,
+        "1492056359",
+    )
+    assert [entry["key"] for entry in job["context"]] == [
+        "force_headers",
+        "force_cookies",
+        "hc_policy",
+        "parse_json_schema",
+        "parse_json_prompt",
+        "autoselect_variant",
+        "check_empty_geo",
+        "safe_search",
+        "currency",
+    ]
+
+
 @on_mock_clock
 async def test_status_and_results(fake: FakeOxylabs) -> None:
     """A job stays pending until `after`, then the results endpoint returns it."""

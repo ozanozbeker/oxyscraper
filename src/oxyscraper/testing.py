@@ -462,6 +462,7 @@ _FORMATS = {
 }
 _ASIN = re.compile(r"[A-Z0-9]+")
 _ASIN_LENGTH = 10
+_PRODUCT_PATH = re.compile(r"/dp/(?P<asin>\w+)")
 # Of the 129, these return results without the target's request and response.
 _BARE_RESULTS = frozenset({"youtube_channel", "youtube_search", "youtube_search_max"})
 # A 1x1 PNG, so an image library opens the default `png` content.
@@ -949,7 +950,13 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
         payload = job.payload
         url = payload.get("url")
         host = httpx2.URL(url).host if isinstance(url, str) else ""
-        context = _CONTEXT[payload["source"]]
+        # The API turns an `amazon` product URL into an `amazon_product` job (docs/research/live-amazon.md#the-amazon-source).
+        product = (
+            _PRODUCT_PATH.search(httpx2.URL(url).path)
+            if payload["source"] == "amazon" and isinstance(url, str)
+            else None
+        )
+        context = _CONTEXT["amazon_product" if product else payload["source"]]
         # Only Amazon and `youtube_metadata` showed this key for `parse: true`, so the fake extends it to all 23 sources.
         if payload.get("parse") is True:
             context = context | {"successful_parse_status_codes": []}
@@ -1002,6 +1009,8 @@ class FakeOxylabs(httpx2.AsyncBaseTransport):
             if key in obj and key not in _SERVER_KEYS
         }
         obj |= {key: payload[key] for key in _INPUT_KEYS if key in payload}
+        if product:
+            obj |= {"source": "amazon_product", "query": product["asin"]}
         obj |= {"pages": _fetched(payload), "start_page": _first_page(payload)}
         code = job.outcome.upload
         uploaded = job.finished + job.outcome.upload_after

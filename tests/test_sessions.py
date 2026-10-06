@@ -214,6 +214,31 @@ async def test_batch_errors(caplog: pytest.LogCaptureFixture) -> None:
     assert warnings(caplog) == ["Rejected amazon_product B0BAD00000: 202 No."]
 
 
+@on_mock_clock
+async def test_amazon_url_batch_errors() -> None:
+    """Each job and each error of an `amazon` URL batch pairs with the payload of its URL, although the API sets each job's `query` to its ASIN."""
+    bad = "https://www.amazon.com/dp/B0BAD00000"
+    fake = FakeOxylabs(
+        lambda payload: Rejected("No.") if payload["url"] == bad else Outcome()
+    )
+    urls = [
+        bad,
+        "https://www.amazon.com/dp/B000000001",
+        "https://www.amazon.com/dp/B000000002",
+    ]
+    payloads = [oxy.Amazon(url=url) for url in urls]
+    async with open_async_session(transport=fake) as session:
+        error = await incomplete(await session.stream(payloads))
+    assert sorted((job.data["url"], job.payload) for job in error.jobs) == [
+        (payload.url, payload) for payload in payloads[1:]
+    ]
+    assert error.rejections == [
+        oxy.Rejection(
+            payload=payloads[0], status_code=202, message="No.", trace_id=None
+        )
+    ]
+
+
 class Normalized(FakeOxylabs):
     """Return each batch's jobs with a slash after each URL."""
 
@@ -238,6 +263,21 @@ async def test_batch_job_with_a_changed_input() -> None:
     assert sorted((job.input, job.payload) for job in jobs) == [
         (payload.url, payload) for payload in payloads
     ]
+
+
+@on_mock_clock
+async def test_batch_error_before_a_changed_input() -> None:
+    """A batch error pairs with the payload of its `url`, so a job with a changed input after it pairs with its own payload."""
+    fake = Normalized(
+        lambda payload: (
+            Rejected("No.") if payload["url"].endswith("/bad") else Outcome()
+        )
+    )
+    payloads = [universal("bad"), universal("1")]
+    async with open_async_session(transport=fake) as session:
+        error = await incomplete(await session.stream(payloads))
+    assert [job.payload for job in error.jobs] == [payloads[1]]
+    assert [rejection.payload for rejection in error.rejections] == [payloads[0]]
 
 
 @on_mock_clock

@@ -259,6 +259,11 @@ A `domain: de` sent with an `amazon.com` URL became `com` in the job object.
 `parse: true` with the help page returned ``Parsing with `url` parameter is not allowed for `amazon` source``.
 The [Amazon][amazon] overview says parsing is "Limited to URLs of specific Amazon page types", and links to [Domain and Locale][domain-locale], which lists no page types.
 
+A batch rewrites each URL the same way.
+On 2026-10-05, a batch held `https://sandbox.oxylabs.io/products/1` and two product URLs.
+It returned two `amazon_product` jobs, each with its sent `url` and its ASIN as `query`.
+Its one `errors` entry held the rejected `url`, and the batch billed 2 results.
+
 ## Top-level parameters
 
 Each job added one parameter to its source's baseline:

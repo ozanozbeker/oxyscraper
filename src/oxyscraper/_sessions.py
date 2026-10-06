@@ -1151,12 +1151,14 @@ class AsyncSession:
         key = _input_key(lines[0].body)
         single = len(lines) == 1
 
-        def read(response: httpx2.Response) -> tuple[list[Job], list[str]]:
+        def read(
+            response: httpx2.Response,
+        ) -> tuple[list[Job], list[dict[str, Any]]]:
             answer = response.json()
             if single:
                 return [_job(answer, [])], []
-            errors = [str(entry["message"]) for entry in answer.get("errors", [])]
-            return [_job(data, []) for data in answer["queries"]], errors
+            jobs = [_job(data, []) for data in answer["queries"]]
+            return jobs, answer.get("errors", [])
 
         values = [line.body[key] for line in lines]
         try:
@@ -1179,7 +1181,8 @@ class AsyncSession:
                 _reject(state, line, error.status_code, error.message, error.trace_id)
             return
         source = lines[0].body["source"]
-        if f"Source `{source}` is not available with a batch request." in errors:
+        unavailable = f"Source `{source}` is not available with a batch request."
+        if any(entry["message"] == unavailable for entry in errors):
             self._unbatched.add(source)
             await self._dispatch(state, lines, checks, submissions)
             return
@@ -1238,10 +1241,10 @@ class AsyncSession:
         state: _RunState,
         lines: Sequence[_Line],
         jobs: list[Job],
-        errors: list[str],
+        errors: list[dict[str, Any]],
         checks: TaskGroup,
     ) -> None:
-        """Pair each job with the payload of its input value, and reject each payload without a job."""
+        """Pair each job and each error with the payload of its input value, and the rest by order."""
         key = _input_key(lines[0].body)
         pools: collections.defaultdict[str, collections.deque[_Line]] = (
             collections.defaultdict(collections.deque)
@@ -1250,18 +1253,26 @@ class AsyncSession:
             pools[line.body[key]].append(line)
         unmatched: list[Job] = []
         for job in jobs:
-            if pool := pools.get(job.input):
+            # `job.input` reads `query` first, and the API sets an `amazon` product URL's `query` to its ASIN.
+            if pool := pools.get(job.data.get(key, "")):
                 self._accept(state, pool.popleft(), job, checks)
             else:
                 unmatched.append(job)
-        # The API returns jobs in the order of the values, so a job whose input the API changed pairs with the next payload without a job.
-        rest = [line for line in lines if line.job is None]
+        messages: list[str] = []
+        for entry in errors:
+            message = str(entry["message"])
+            # A URL batch's error holds its `url` (docs/research/live-api.md#a-batch-with-invalid-values).
+            if pool := pools.get(entry.get(key, "")):
+                _reject(state, pool.popleft(), httpx2.codes.ACCEPTED, message, None)
+            else:
+                messages.append(message)
+        # The API returns jobs and errors in the order of the values, so the rest pair by order.
+        rest = [line for line in lines if line.job is None and line.rejection is None]
         for line, job in zip(rest, unmatched, strict=False):
             self._accept(state, line, job, checks)
-        # An entry in `errors` holds no `query`, so entries pair with payloads by order.
-        messages = iter(errors)
+        remaining = iter(messages)
         for line in rest[len(unmatched) :]:
-            message = next(messages, "The batch returned neither a job nor an error")
+            message = next(remaining, "The batch returned neither a job nor an error")
             _reject(state, line, httpx2.codes.ACCEPTED, message, None)
 
     async def _resize(

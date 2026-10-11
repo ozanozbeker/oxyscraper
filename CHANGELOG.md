@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.1](https://github.com/ozanozbeker/oxyscraper/compare/v0.1.0...v0.1.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* give concurrent runs distinct run log files ([#157](https://github.com/ozanozbeker/oxyscraper/issues/157)) ([a486f1c](https://github.com/ozanozbeker/oxyscraper/commit/a486f1c6221d89589f4563d1124cc14457db09af)), closes [#141](https://github.com/ozanozbeker/oxyscraper/issues/141)
+* pair an amazon URL batch's jobs and errors by URL ([#156](https://github.com/ozanozbeker/oxyscraper/issues/156)) ([4f45e85](https://github.com/ozanozbeker/oxyscraper/commit/4f45e8501e388bebf0b084d3d6a3066e574ae8e5))
+* release each done job's results once the caller's loop has it ([#154](https://github.com/ozanozbeker/oxyscraper/issues/154)) ([2810e09](https://github.com/ozanozbeker/oxyscraper/commit/2810e099a0be2df13cf45487d958e0be5eca927b))
+
 ## [0.1.0](https://github.com/ozanozbeker/oxyscraper/compare/v0.0.1...v0.1.0) (2026-10-05)
 
 

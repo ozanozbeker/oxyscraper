@@ -10,11 +10,11 @@ import signal
 import threading
 import weakref
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import anyio
 import httpx2
@@ -1249,6 +1249,46 @@ def test_run_log_folder(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> Non
     )
     assert first == f"Wrote the run log to {log}"
     assert re.fullmatch(r"Wrote the run log to memory:///\d{8}T[\d.]+Z\.jsonl", second)
+
+
+def test_run_logs_in_one_millisecond(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runs that start in the same millisecond each write their own run log, a millisecond apart."""
+
+    class Frozen(datetime):
+        @override
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> Self:
+            return cls.fromtimestamp(START.timestamp(), tz)
+
+    monkeypatch.setattr("oxyscraper._sessions.datetime", Frozen)
+    store = MemoryStore()
+    with open_session() as session:
+        jobs = [
+            session.execute(universal(path), realtime=True, run_log=store).one()
+            for path in "123"
+        ]
+    assert {
+        name: [json.loads(line)["id"] for line in log.splitlines()]
+        for name, log in stored(store).items()
+    } == {f"20260101T000000.00{n}Z.jsonl": [job.id] for n, job in enumerate(jobs)}
+
+
+def test_run_log_without_create(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A store that cannot create an object only if it is absent still gets the run log."""
+    put = obstore.put
+
+    def overwrite_only(*args: Any, mode: str | None = None, **kwargs: Any) -> Any:
+        if mode == "create":
+            raise NotImplementedError
+        return put(*args, **kwargs)
+
+    monkeypatch.setattr(obstore, "put", overwrite_only)
+    store = MemoryStore()
+    with open_session() as session:
+        job = session.execute(universal(), realtime=True, run_log=store).one()
+    assert logged(store) == [
+        record("done", {"source": "universal", "url": f"{SANDBOX}/"}, job.id)
+    ]
 
 
 @on_real_time

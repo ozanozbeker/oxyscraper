@@ -139,6 +139,9 @@ The run writes an empty file before its first submission, so a folder it cannot 
 It replaces the file when the run ends, raises or stops, even after Ctrl+C.
 An empty run log therefore means a process killed outright or a second Ctrl+C, and jobs may have billed without a record.
 
+A run that starts in the same millisecond as another takes the next free millisecond, so each run keeps its own file.
+An HTTP store, or S3 before obstore 0.5, cannot check for the other run's file, so there the later run overwrites it.
+
 ## Recover a run
 
 Nothing resumes a run, and a second call with the same payloads submits each one again.

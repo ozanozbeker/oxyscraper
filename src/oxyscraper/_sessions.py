@@ -917,6 +917,7 @@ class AsyncSession:
             A failed write stops submission and every later write.
         run_log
             The folder that oxy writes the run log to, as `<run start>.jsonl`, with one JSON line per payload in input order.
+            If another run already holds that name, oxy takes the next free millisecond.
             It takes the same types as `destination`.
             oxy writes an empty file before the first submission, and replaces it when the run ends or stops.
             So an empty file means a second Ctrl+C or a killed process, and jobs may have billed without a record.
@@ -951,11 +952,9 @@ class AsyncSession:
         )
         log = None
         if run_log is not None:
-            # Windows forbids colons in file names, so the start takes ISO 8601's basic form.
-            path = f"{datetime.now(UTC):%Y%m%dT%H%M%S.%f}"[:-3] + "Z.jsonl"
             folder = await anyio.to_thread.run_sync(_store, run_log)
             # An unwritable run log raises here, before any request bills.
-            await anyio.to_thread.run_sync(obstore.put, folder, path, b"")
+            path = await anyio.to_thread.run_sync(_claimed, folder, datetime.now(UTC))
             log = _RunLog(folder, path, _shown(run_log, path))
         send, receive = anyio.create_memory_object_stream[Job](math.inf)
         self._streams.callback(receive.close)
@@ -1703,6 +1702,22 @@ def _shown(folder: str | os.PathLike[str] | ObjectStore, name: str) -> _ShownPat
     if isinstance(folder, str | os.PathLike):  # pyrefly: ignore[implicit-any-type-argument]
         return _ShownPath(Path(folder) / name)
     return _ShownPath(name)
+
+
+def _claimed(folder: ObjectStore, start: datetime) -> str:
+    """Write an empty run log named by `start`, or by the first later millisecond that no other run holds, and return its name."""
+    while True:
+        # Windows forbids colons in file names, so the start takes ISO 8601's basic form.
+        name = f"{start:%Y%m%dT%H%M%S.%f}"[:-3] + "Z.jsonl"
+        try:
+            obstore.put(folder, name, b"", mode="create")
+        except obstore.exceptions.AlreadyExistsError:
+            start += timedelta(milliseconds=1)
+            continue
+        # An HTTP store, or S3 before obstore 0.5, cannot create only if absent, so it overwrites.
+        except NotImplementedError:
+            obstore.put(folder, name, b"")
+        return name
 
 
 def _listed(payloads: Payload | Iterable[Payload]) -> list[Payload]:
